@@ -147,6 +147,13 @@ class DefaultConfig:
     # calls to work for non-admin users.  Set False to keep the legacy
     # admin-only model.
     OTS_MUMBLE_ENABLE_CONFERENCE_CALLS = True
+    # Periodic cleanup of root-level Mumble channels not backed by an OTS
+    # group.  Channels whose name matches an OTS group are always preserved.
+    # Anything else (event channels admins create through the Mumble GUI) is
+    # removed once it's been empty for IDLE_DAYS, so deliberate event channels
+    # survive as long as they're in use.
+    OTS_MUMBLE_CHANNEL_CLEANUP_ENABLED = True
+    OTS_MUMBLE_CHANNEL_CLEANUP_IDLE_DAYS = 5
 
     OTS_IP_WHITELIST = ["127.0.0.1"]
 
@@ -280,6 +287,13 @@ class DefaultConfig:
             "trigger": "interval",
             "seconds": 0,
             "minutes": 1,
+            "next_run_time": None,
+        },
+        {
+            "id": "cleanup_unmanaged_mumble_channels",
+            "func": "opentakserver.blueprints.scheduled_jobs:cleanup_unmanaged_mumble_channels",
+            "trigger": "interval",
+            "days": 2,
             "next_run_time": None,
         },
     ]
