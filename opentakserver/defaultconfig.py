@@ -138,6 +138,12 @@ class DefaultConfig:
 
     OTS_ENABLE_MUMBLE_AUTHENTICATION = False
     OTS_ICE_SECRET = ""
+    # When True, OTS grants MakeTempChannel to authenticated users on Root
+    # and on each OTS-managed channel, and applies a conference-capable ACL
+    # to every temp channel as it's created.  Required for ATAK VX direct
+    # calls to work for non-admin users.  Set False to keep the legacy
+    # admin-only model.
+    OTS_MUMBLE_ENABLE_CONFERENCE_CALLS = True
 
     OTS_IP_WHITELIST = ["127.0.0.1"]
 
