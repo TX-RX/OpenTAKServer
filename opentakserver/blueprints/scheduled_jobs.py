@@ -398,3 +398,91 @@ def delete_old_data():
 # This function is to prevent errors caused by changing get_airplanes_live_data() to get_adsb_data
 def get_airplanes_live_data():
     return
+
+
+def cleanup_unmanaged_mumble_channels():
+    """Delete root-level Mumble channels that aren't backed by an OTS group
+    and have been idle long enough to be safely removed.
+
+    Preserves event channels admins create through Mumble's GUI until they're
+    actually unused, so a deliberately-kept channel for an event survives this
+    job until activity stops.  Channels whose name matches an OTS group are
+    always preserved (those are managed by sync_channels_from_groups).
+
+    Idle = currently empty AND last activity older than the configured
+    threshold.  Activity is recorded in MumbleIceApp by the direction
+    enforcement callback on every userConnected / userStateChanged.  After a
+    service restart, channels with no recorded activity fall back to the
+    service start time -- so a long-idle channel needs another full idle
+    window of running service before it qualifies for deletion.
+    """
+    with apscheduler.app.app_context():
+        if not app.config.get("OTS_MUMBLE_CHANNEL_CLEANUP_ENABLED", True):
+            return
+
+        ice_app = app.extensions.get("mumble_ice_app")
+        if ice_app is None or not ice_app.connected:
+            logger.debug("Skipping Mumble channel cleanup: Ice not connected")
+            return
+
+        idle_days = app.config.get("OTS_MUMBLE_CHANNEL_CLEANUP_IDLE_DAYS", 5)
+        threshold = datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(
+            days=idle_days
+        )
+
+        managed_names = {
+            g.name for g in db.session.query(Group).all()
+            if g.name and g.name != "__ANON__"
+        }
+
+        try:
+            booted = ice_app.meta.getBootedServers()
+        except Exception as e:
+            logger.error(f"Mumble channel cleanup: getBootedServers failed: {e}")
+            return
+
+        for server in booted:
+            try:
+                channels = server.getChannels()
+                users = server.getUsers()
+            except Exception as e:
+                logger.error(f"Mumble channel cleanup: getChannels/getUsers failed: {e}")
+                continue
+
+            occupied = {u.channel for u in users.values()}
+            # Stamp every currently-occupied channel as freshly active so the
+            # idle clock genuinely measures "no one in here," even for channels
+            # whose users joined before this service started.
+            for channel_id in occupied:
+                ice_app.record_channel_activity(channel_id)
+
+            for channel_id, ch in channels.items():
+                if channel_id == 0:
+                    continue
+                if ch.parent != 0:
+                    continue
+                if ch.name in managed_names:
+                    continue
+                if ch.temporary:
+                    # Murmur GCs these on its own when empty; don't race it.
+                    continue
+                if channel_id in occupied:
+                    continue
+
+                last_active = ice_app._channel_last_active.get(
+                    channel_id, ice_app.service_start_time
+                )
+                if last_active > threshold:
+                    continue
+
+                try:
+                    server.removeChannel(channel_id)
+                    ice_app._channel_last_active.pop(channel_id, None)
+                    logger.info(
+                        f"Deleted idle unmanaged Mumble channel '{ch.name}' "
+                        f"(id={channel_id}, idle_since={last_active.isoformat()})"
+                    )
+                except Exception as e:
+                    logger.error(
+                        f"Failed to delete idle channel '{ch.name}' (id={channel_id}): {e}"
+                    )

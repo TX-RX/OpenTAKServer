@@ -1,6 +1,7 @@
 import os
 import threading
 import time
+from datetime import datetime, timezone
 from threading import Timer
 
 import Ice
@@ -96,9 +97,23 @@ class MumbleIceApp(Ice.Application):
         self.adapter = None
         # server_id -> ServerCallbackPrx; guards against duplicate registration
         self.server_callbacks = {}
+        # channel_id -> last activity datetime (UTC).  Updated by the direction
+        # enforcement callback on every userConnected / userStateChanged so the
+        # scheduled cleanup job can identify idle event channels.  After a
+        # service restart, channels with no entry fall back to service_start_time.
+        self._channel_last_active = {}
+        self._channel_activity_lock = threading.Lock()
+        self.service_start_time = datetime.now(timezone.utc)
         # Expose this daemon to Flask blueprints so group_api can request channel
         # syncs after add/delete.  app.extensions is a plain dict; reads are thread-safe.
         self.app.extensions["mumble_ice_app"] = self
+
+    def record_channel_activity(self, channel_id):
+        """Stamp `now` as the last-active time for a channel.  Called by the
+        direction-enforcement callback on connect / channel-hop, and by the
+        cleanup job when it observes a channel that's currently occupied."""
+        with self._channel_activity_lock:
+            self._channel_last_active[channel_id] = datetime.now(timezone.utc)
 
     def run(self, *args):
         if not self.initialize_ice_connection():
@@ -515,11 +530,17 @@ class DirectionEnforcementCallback(Murmur.ServerCallback):
 
     # ----------------------------------------------------------- Ice callbacks
 
+    def _record_activity(self, channel_id):
+        ice_app = self.app.extensions.get("mumble_ice_app")
+        if ice_app is not None:
+            ice_app.record_channel_activity(channel_id)
+
     def userConnected(self, state, current=None):
         self.logger.info(
             f"User connected: {state.name} (session={state.session}, userid={state.userid}) "
             f"channel={state.channel}"
         )
+        self._record_activity(state.channel)
         # DB lookup runs here in the Ice dispatch thread (safe — same as authenticate())
         directions, is_admin = self._get_user_directions(state.session, state.name)
         # Only the Ice getState/setState calls go to a background thread
@@ -532,6 +553,7 @@ class DirectionEnforcementCallback(Murmur.ServerCallback):
 
     def userStateChanged(self, state, current=None):
         """Fire on any state change — channel moves trigger direction re-check."""
+        self._record_activity(state.channel)
         directions, is_admin = self._get_user_directions(state.session, state.name)
         self._dispatch_apply(state.session, state.name, state.channel, directions, is_admin)
 
