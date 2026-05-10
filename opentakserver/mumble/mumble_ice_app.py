@@ -18,6 +18,27 @@ Ice.loadSlice(
 import Murmur
 
 
+# Murmur permission bit masks — names mirror Murmur.ice for grep-ability.
+PERM_TRAVERSE = 0x002
+PERM_ENTER = 0x004
+PERM_SPEAK = 0x008
+PERM_WHISPER = 0x100
+PERM_TEXT_MESSAGE = 0x200
+PERM_MAKE_TEMP_CHANNEL = 0x400
+
+# Baseline speak/text grant used on temp channels so any authenticated user
+# (regardless of which OTS group they belong to) can join a VX-initiated
+# conference call once invited.
+PERM_BASELINE_SPEAK = (
+    PERM_TRAVERSE | PERM_ENTER | PERM_SPEAK | PERM_WHISPER | PERM_TEXT_MESSAGE
+)
+
+# Same admin grant Murmur uses on Root by default — gives admins full control
+# of temp channels (kick stragglers, link, etc.) without touching their existing
+# per-channel admin rights.
+PERM_ADMIN_FULL = 0x707FF
+
+
 class MumbleIceDaemon(threading.Thread):
     def __init__(self, app, logger):
         super().__init__()
@@ -219,9 +240,83 @@ class MumbleIceApp(Ice.Application):
                     f"Mumble channel '{name}' has no matching OTS group "
                     f"(server={server.id()}); leaving in place"
                 )
+
+            if self.app.config.get("OTS_MUMBLE_ENABLE_CONFERENCE_CALLS", True):
+                self._ensure_temp_channel_acls(server, group_names)
         except Exception as e:
             self.logger.error(
                 f"sync_channels_from_groups failed: {e}", exc_info=True
+            )
+
+    def _ensure_temp_channel_acls(self, server, managed_names):
+        """Grant MakeTempChannel on Root and each OTS-managed channel.
+
+        The OTS install's ACL model locks group channels to their members
+        (revoke @all, grant only to <groupname>) and grants MakeTempChannel
+        only to admins on Root.  That blocks the ATAK VX plugin's direct-call
+        feature for non-admin users, since VX needs to create a temp channel
+        for the 1:1.  This pass ORs MakeTempChannel into the auth/<groupname>/
+        admin grants on the parents that gate creation.
+
+        Channel-level ACLs on the temp itself are set separately by
+        DirectionEnforcementCallback.channelCreated when a temp is created.
+        """
+        try:
+            channels = server.getChannels()
+        except Exception as e:
+            self.logger.error(f"getChannels failed: {e}")
+            return
+
+        for channel_id, ch in channels.items():
+            if channel_id != 0 and ch.name not in managed_names:
+                continue
+            self._ensure_make_temp_channel_acl(server, channel_id, ch.name)
+
+    def _ensure_make_temp_channel_acl(self, server, channel_id, channel_name):
+        """Idempotently OR MakeTempChannel into auth/<channel_name>/admin grants.
+
+        Only modifies non-inherited entries; inherited rows are filtered out
+        before setACL (passing them back would shadow the parent's ACL and
+        break propagation).  Skips any existing entry that already has the
+        bit set, so this is safe to re-run on every watchdog tick.
+        """
+        try:
+            acls, groups, inherit = server.getACL(channel_id)
+        except Exception as e:
+            self.logger.error(
+                f"getACL({channel_id}, name={channel_name}) failed: {e}"
+            )
+            return
+
+        targets = {"auth", "admin"}
+        if channel_name and channel_name not in ("Root", "__ANON__"):
+            targets.add(channel_name)
+
+        own_acls = [a for a in acls if not a.inherited]
+        dirty = False
+        for acl in own_acls:
+            if acl.group in targets and not (acl.allow & PERM_MAKE_TEMP_CHANNEL):
+                before = acl.allow
+                acl.allow |= PERM_MAKE_TEMP_CHANNEL
+                self.logger.info(
+                    f"Granting MakeTempChannel on channel_id={channel_id} "
+                    f"name={channel_name} group={acl.group}: "
+                    f"0x{before:x} -> 0x{acl.allow:x}"
+                )
+                dirty = True
+
+        if not dirty:
+            return
+
+        try:
+            server.setACL(channel_id, own_acls, groups, inherit)
+            self.logger.info(
+                f"Committed ACL update on channel_id={channel_id} name={channel_name}"
+            )
+        except Exception as e:
+            self.logger.error(
+                f"setACL({channel_id}, name={channel_name}) failed: {e}",
+                exc_info=True,
             )
 
     def request_sync(self):
@@ -445,6 +540,55 @@ class DirectionEnforcementCallback(Murmur.ServerCallback):
 
     def channelCreated(self, state, current=None):
         self._channel_cache = None
+        if not state.temporary:
+            return
+        if not self.app.config.get("OTS_MUMBLE_ENABLE_CONFERENCE_CALLS", True):
+            return
+        # Dispatch the ACL set off the Ice thread — setACL is a synchronous
+        # Ice call and would otherwise block the dispatcher.  Same pattern as
+        # _dispatch_apply for direction enforcement.
+        threading.Thread(
+            target=self._apply_temp_channel_acl,
+            args=(state.id, state.name),
+            daemon=True,
+        ).start()
+
+    def _apply_temp_channel_acl(self, channel_id, channel_name):
+        """Lock down a freshly-created temp channel with a conference-capable ACL.
+
+        Without this, a temp channel under a group channel inherits nothing
+        useful (the group channel's apply_sub=0 entries don't propagate), so
+        invited users from a different OTS group can't enter — breaking VX
+        cross-group conference calls.  Setting an explicit ACL with inherit=False
+        guarantees the same behavior regardless of where VX places the temp:
+        any authenticated user can enter/speak; admins keep full control.
+        """
+        try:
+            acl_all = Murmur.ACL(
+                applyHere=True, applySubs=False, inherited=False,
+                userid=-1, group="all", allow=PERM_TRAVERSE, deny=0,
+            )
+            acl_auth = Murmur.ACL(
+                applyHere=True, applySubs=False, inherited=False,
+                userid=-1, group="auth", allow=PERM_BASELINE_SPEAK, deny=0,
+            )
+            acl_admin = Murmur.ACL(
+                applyHere=True, applySubs=False, inherited=False,
+                userid=-1, group="admin", allow=PERM_ADMIN_FULL, deny=0,
+            )
+            self.server.setACL(
+                channel_id, [acl_all, acl_auth, acl_admin], [], False
+            )
+            self.logger.info(
+                f"Temp channel ACL set: id={channel_id} name='{channel_name}' "
+                f"(auth=0x{PERM_BASELINE_SPEAK:x}, admin=0x{PERM_ADMIN_FULL:x})"
+            )
+        except Exception as e:
+            self.logger.error(
+                f"Failed to set temp channel ACL on id={channel_id} "
+                f"name='{channel_name}': {e}",
+                exc_info=True,
+            )
 
     def channelRemoved(self, state, current=None):
         self._channel_cache = None
