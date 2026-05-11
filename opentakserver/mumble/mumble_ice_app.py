@@ -310,13 +310,31 @@ class MumbleIceApp(Ice.Application):
         own_acls = [a for a in acls if not a.inherited]
         dirty = False
         for acl in own_acls:
-            if acl.group in targets and not (acl.allow & PERM_MAKE_TEMP_CHANNEL):
-                before = acl.allow
-                acl.allow |= PERM_MAKE_TEMP_CHANNEL
+            if acl.group not in targets:
+                continue
+
+            new_allow = acl.allow | PERM_MAKE_TEMP_CHANNEL
+            new_apply_subs = acl.applySubs
+
+            # OTS administrators get the same full grant Murmur uses on Root
+            # (Write, Move, Kick, Ban, Register, MakeTempChannel, etc.) with
+            # apply_sub=1 so the grant propagates into any sub/temp channel
+            # created beneath an OTS-managed channel.  This is what makes
+            # "OTS admin" mean "Mumble server administrator" — they can move
+            # users, kick, ban, manage ACLs, etc. on every OTS channel.
+            if acl.group == "admin":
+                new_allow |= PERM_ADMIN_FULL
+                new_apply_subs = True
+
+            if new_allow != acl.allow or new_apply_subs != acl.applySubs:
+                before_allow = acl.allow
+                before_sub = acl.applySubs
+                acl.allow = new_allow
+                acl.applySubs = new_apply_subs
                 self.logger.info(
-                    f"Granting MakeTempChannel on channel_id={channel_id} "
-                    f"name={channel_name} group={acl.group}: "
-                    f"0x{before:x} -> 0x{acl.allow:x}"
+                    f"Updating ACL on channel_id={channel_id} name={channel_name} "
+                    f"group={acl.group}: allow 0x{before_allow:x} -> 0x{acl.allow:x}, "
+                    f"apply_sub {before_sub} -> {acl.applySubs}"
                 )
                 dirty = True
 
@@ -500,6 +518,23 @@ class DirectionEnforcementCallback(Murmur.ServerCallback):
 
             direction = group_directions.get(channel_name)
             if direction is None:
+                # Non-OTS channel (temp channel for VX private call, or an
+                # admin-created event channel).  Direction enforcement is an
+                # OTS group concept; outside an OTS group, a user who was
+                # suppressed in their previous channel must be un-suppressed
+                # so they can actually speak in the call they just joined.
+                try:
+                    s = self.server.getState(session)
+                    if s.suppress:
+                        s.suppress = False
+                        self.server.setState(s)
+                        self.logger.info(
+                            f"SPEAK ENABLED (non-OTS channel): {username} in {channel_name}"
+                        )
+                except Exception as e:
+                    self.logger.error(
+                        f"Failed to clear suppress for '{username}' in {channel_name}: {e}"
+                    )
                 return
 
             s = self.server.getState(session)
@@ -576,34 +611,61 @@ class DirectionEnforcementCallback(Murmur.ServerCallback):
         ).start()
 
     def _apply_temp_channel_acl(self, channel_id, channel_name):
-        """Lock down a freshly-created temp channel with a conference-capable ACL.
+        """Augment a freshly-created temp channel with a conference-capable ACL.
 
-        Without this, a temp channel under a group channel inherits nothing
-        useful (the group channel's apply_sub=0 entries don't propagate), so
-        invited users from a different OTS group can't enter — breaking VX
-        cross-group conference calls.  Setting an explicit ACL with inherit=False
-        guarantees the same behavior regardless of where VX places the temp:
-        any authenticated user can enter/speak; admins keep full control.
+        Murmur's default temp setup already grants the creator admin perms on
+        their own temp (via an auto-created local `admin` group with the
+        creator's userid added) plus inherits @all/Traverse and admin/full from
+        Root.  That's what lets the VX plugin manage its temp post-creation
+        (set call ACL, move users at end-call, delete the temp).  But the
+        default doesn't grant non-creator @auth users Enter/Speak — so a
+        callee from a different OTS group can't join.
+
+        This function ADDS an explicit @auth=Enter|Speak|Whisper|TextMessage
+        entry while preserving Murmur's defaults (inherit=True, all local
+        groups kept).  Result: cross-group conferences work AND creator
+        retains admin on their own temp for VX's call lifecycle.
         """
         try:
-            acl_all = Murmur.ACL(
-                applyHere=True, applySubs=False, inherited=False,
-                userid=-1, group="all", allow=PERM_TRAVERSE, deny=0,
+            # Read what Murmur set up: implicit creator-admin group + inherited
+            # ACLs.  We preserve everything and just layer @auth Enter/Speak on top.
+            try:
+                pre_acls, pre_groups, _pre_inherit = self.server.getACL(channel_id)
+            except Exception as e:
+                self.logger.error(
+                    f"getACL on new temp id={channel_id} failed, skipping ACL set: {e}"
+                )
+                return
+
+            # Keep only locally-defined groups (notably the creator-admin entry
+            # Murmur auto-creates).  Inherited groups are recreated by Murmur
+            # from the parent chain — passing them back would shadow inheritance.
+            local_groups = [g for g in pre_groups if not g.inherited]
+
+            # Keep existing non-inherited ACLs (in case Murmur or VX set
+            # something specific), then add our @auth Enter/Speak grant.
+            own_acls = [a for a in pre_acls if not a.inherited]
+            has_auth_speak = any(
+                a.group == "auth" and (a.allow & PERM_BASELINE_SPEAK) == PERM_BASELINE_SPEAK
+                for a in own_acls
             )
-            acl_auth = Murmur.ACL(
-                applyHere=True, applySubs=False, inherited=False,
-                userid=-1, group="auth", allow=PERM_BASELINE_SPEAK, deny=0,
+            if not has_auth_speak:
+                own_acls.append(Murmur.ACL(
+                    applyHere=True, applySubs=False, inherited=False,
+                    userid=-1, group="auth", allow=PERM_BASELINE_SPEAK, deny=0,
+                ))
+
+            # inherit=True preserves @all/Traverse + admin/full from Root, plus
+            # the creator-admin group membership chain.
+            self.server.setACL(channel_id, own_acls, local_groups, True)
+
+            preserved_creator = next(
+                (g for g in local_groups if g.name == "admin" and g.add), None
             )
-            acl_admin = Murmur.ACL(
-                applyHere=True, applySubs=False, inherited=False,
-                userid=-1, group="admin", allow=PERM_ADMIN_FULL, deny=0,
-            )
-            self.server.setACL(
-                channel_id, [acl_all, acl_auth, acl_admin], [], False
-            )
+            creator_uids = list(preserved_creator.add) if preserved_creator else []
             self.logger.info(
-                f"Temp channel ACL set: id={channel_id} name='{channel_name}' "
-                f"(auth=0x{PERM_BASELINE_SPEAK:x}, admin=0x{PERM_ADMIN_FULL:x})"
+                f"Temp channel ACL augmented: id={channel_id} name='{channel_name}' "
+                f"added auth=0x{PERM_BASELINE_SPEAK:x}, preserved creator-admin uids={creator_uids}"
             )
         except Exception as e:
             self.logger.error(
