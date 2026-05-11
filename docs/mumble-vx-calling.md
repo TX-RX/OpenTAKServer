@@ -276,7 +276,7 @@ If a channel is *not* getting deleted that you think should be, check:
   reattaches. If you need a faster recovery, restart OTS too — but you
   no longer *have* to.
 
-- **VX 1.0.0 clients reconnect every few minutes by design.** You'll see
+- **Plain VX clients (v2.1.0) reconnect every few minutes by design.** You'll see
   bursts of simultaneous `Connection closed` + `New connection` lines for
   every VX client at roughly 3-5 minute intervals, even when nothing is
   happening. This is the plugin's TLS reset cycle. Not a bug.
