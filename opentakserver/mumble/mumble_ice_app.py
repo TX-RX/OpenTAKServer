@@ -120,9 +120,12 @@ class MumbleIceApp(Ice.Application):
             self.logger.error("Mumble server connection failed")
             return 1
 
+        # check_connection() schedules a recursive 10s Timer that reattaches
+        # callbacks if Murmur restarts.  Don't cancel it -- leaving it running
+        # is the whole point.  Without it, OTS doesn't recover after a Murmur
+        # restart and clients get "Wrong certificate or password" rejections
+        # until OTS is manually restarted.
         self.check_connection()
-
-        self.watchdog.cancel()
 
         if self.interrupted():
             self.logger.warning("Caught interrupt, shutting down")
