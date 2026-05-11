@@ -444,6 +444,16 @@ class MumbleIceApp(Ice.Application):
         try:
             for server in self.meta.getBootedServers():
                 self.sync_channels_from_groups(server)
+        except Ice.ConnectionRefusedException as e:
+            # Murmur died between request_sync and now.  Mirror what
+            # MetaCallback.stopped does -- flip connected=False so the
+            # cleanup job and any other consumers of that flag stop using
+            # the dead proxy.  The watchdog will repair state on its next
+            # tick (~10s) when attach_callbacks reconnects.
+            self.connected = False
+            self.logger.warning(
+                f"_sync_all_servers: Ice connection refused, marking disconnected: {e}"
+            )
         except Exception as e:
             self.logger.error(f"_sync_all_servers: {e}", exc_info=True)
 
