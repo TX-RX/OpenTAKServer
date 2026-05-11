@@ -53,7 +53,17 @@ class MumbleIceDaemon(threading.Thread):
         props = Ice.createProperties()
         props.setProperty("Ice.ImplicitContext", "Shared")
         props.setProperty("Ice.Default.EncodingVersion", "1.0")
-        props.setProperty("Ice.Default.InvocationTimeout", str(30 * 1000))
+        # 5s is plenty for localhost Ice round-trips and lets transient
+        # Murmur stalls surface as fast errors instead of compounding into
+        # minute-long client-visible hangs.
+        props.setProperty("Ice.Default.InvocationTimeout", str(5 * 1000))
+        # Cap the client thread pool so bursts of concurrent Ice calls during
+        # call lifecycle can't queue beyond what Murmur can drain.
+        props.setProperty("Ice.ThreadPool.Client.SizeMax", "10")
+        # Disable Ice's default retry-once behavior.  With the short timeout
+        # above we'd rather see a timeout immediately than wait for a retry
+        # that doubles user-visible latency.
+        props.setProperty("Ice.RetryIntervals", "-1")
         props.setProperty("Ice.MessageSizeMax", str(1024))
         idata = Ice.InitializationData()
         idata.properties = props
