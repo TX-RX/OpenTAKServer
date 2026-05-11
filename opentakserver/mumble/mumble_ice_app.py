@@ -114,6 +114,11 @@ class MumbleIceApp(Ice.Application):
         self._channel_last_active = {}
         self._channel_activity_lock = threading.Lock()
         self.service_start_time = datetime.now(timezone.utc)
+        # Serializes ACL get/modify/set passes on persistent channels so
+        # concurrent request_sync calls (e.g. multiple group_api add operations)
+        # can't TOCTOU-race each other or clobber manual ACL edits made between
+        # the read and the write.
+        self._acl_lock = threading.Lock()
         # Expose this daemon to Flask blueprints so group_api can request channel
         # syncs after add/delete.  app.extensions is a plain dict; reads are thread-safe.
         self.app.extensions["mumble_ice_app"] = self
@@ -124,6 +129,18 @@ class MumbleIceApp(Ice.Application):
         cleanup job when it observes a channel that's currently occupied."""
         with self._channel_activity_lock:
             self._channel_last_active[channel_id] = datetime.now(timezone.utc)
+
+    def get_channel_last_active(self, channel_id):
+        """Return the last-activity timestamp for a channel, falling back to
+        service_start_time if no activity has been recorded since boot."""
+        with self._channel_activity_lock:
+            return self._channel_last_active.get(channel_id, self.service_start_time)
+
+    def forget_channel_activity(self, channel_id):
+        """Drop a channel's last-active entry (e.g. after the cleanup job
+        deletes the channel) so the dict doesn't grow unboundedly."""
+        with self._channel_activity_lock:
+            self._channel_last_active.pop(channel_id, None)
 
     def run(self, *args):
         if not self.initialize_ice_connection():
@@ -324,80 +341,96 @@ class MumbleIceApp(Ice.Application):
         before setACL (passing them back would shadow the parent's ACL).
         Idempotent — safe to re-run.
         """
-        try:
-            acls, groups, inherit = server.getACL(channel_id)
-        except Exception as e:
-            self.logger.error(
-                f"getACL({channel_id}, name={channel_name}) failed: {e}"
-            )
-            return
+        # Serialize get/modify/set so concurrent syncs (request_sync racing
+        # with the startup attach path) can't TOCTOU-clobber each other or
+        # overwrite a manual ACL edit that lands between the read and write.
+        with self._acl_lock:
+            try:
+                acls, groups, inherit = server.getACL(channel_id)
+            except Exception as e:
+                self.logger.error(
+                    f"getACL({channel_id}, name={channel_name}) failed: {e}"
+                )
+                return
 
-        is_root = (channel_id == 0)
-        own_acls = [a for a in acls if not a.inherited]
+            is_root = (channel_id == 0)
+            own_acls = [a for a in acls if not a.inherited]
 
-        targets = {"auth", "admin"}
-        if channel_name and channel_name not in ("Root", "__ANON__"):
-            targets.add(channel_name)
+            targets = {"auth", "admin"}
+            if channel_name and channel_name not in ("Root", "__ANON__"):
+                targets.add(channel_name)
 
-        dirty = False
-        for acl in own_acls:
-            if acl.group not in targets:
-                continue
+            dirty = False
+            for acl in own_acls:
+                if acl.group not in targets:
+                    continue
 
-            new_allow = acl.allow | PERM_MAKE_TEMP_CHANNEL
-            new_apply_subs = acl.applySubs
+                new_allow = acl.allow | PERM_MAKE_TEMP_CHANNEL
+                new_apply_subs = acl.applySubs
+                new_apply_here = acl.applyHere
 
-            if acl.group == "admin":
-                new_allow |= PERM_ADMIN_FULL
-                new_apply_subs = True
+                if acl.group == "admin":
+                    new_allow |= PERM_ADMIN_FULL
+                    new_apply_subs = True
 
-            if acl.group == "auth":
-                # @auth must propagate to subchannels so VX temps inherit
-                # Enter+Speak+Whisper+TextMessage without per-temp intervention.
-                new_apply_subs = True
+                if acl.group == "auth":
+                    # @auth must propagate to subchannels so VX temps inherit
+                    # Enter+Speak+Whisper+TextMessage without per-temp intervention.
+                    new_apply_subs = True
+                    # On non-Root group channels, the channel itself MUST stay
+                    # members-only (gated by the <groupname> ACL).  Force
+                    # apply_here=False even if a prior buggy run or a manual
+                    # edit left @auth applying to the channel itself, so the
+                    # per-group privacy model can't drift open.
+                    if not is_root:
+                        new_apply_here = False
 
-            if new_allow != acl.allow or new_apply_subs != acl.applySubs:
-                before_allow = acl.allow
-                before_sub = acl.applySubs
-                acl.allow = new_allow
-                acl.applySubs = new_apply_subs
+                if (new_allow != acl.allow
+                        or new_apply_subs != acl.applySubs
+                        or new_apply_here != acl.applyHere):
+                    before_allow = acl.allow
+                    before_sub = acl.applySubs
+                    before_here = acl.applyHere
+                    acl.allow = new_allow
+                    acl.applySubs = new_apply_subs
+                    acl.applyHere = new_apply_here
+                    self.logger.info(
+                        f"Updating ACL on channel_id={channel_id} name={channel_name} "
+                        f"group={acl.group}: allow 0x{before_allow:x} -> 0x{acl.allow:x}, "
+                        f"apply_here {before_here} -> {acl.applyHere}, "
+                        f"apply_sub {before_sub} -> {acl.applySubs}"
+                    )
+                    dirty = True
+
+            # Group channels (REACT, Family, etc.) typically have no own @auth
+            # ACL -- access is gated entirely by the per-channel group grant.
+            # Add an apply_here=False, apply_sub=True @auth grant so temps
+            # under this channel inherit Enter+Speak for any authenticated
+            # user.  The channel itself stays members-only.
+            if not is_root and not any(a.group == "auth" for a in own_acls):
+                own_acls.append(Murmur.ACL(
+                    applyHere=False, applySubs=True, inherited=False,
+                    userid=-1, group="auth", allow=PERM_BASELINE_SPEAK, deny=0,
+                ))
                 self.logger.info(
-                    f"Updating ACL on channel_id={channel_id} name={channel_name} "
-                    f"group={acl.group}: allow 0x{before_allow:x} -> 0x{acl.allow:x}, "
-                    f"apply_sub {before_sub} -> {acl.applySubs}"
+                    f"Adding @auth sub-grant on channel_id={channel_id} "
+                    f"name={channel_name}: allow=0x{PERM_BASELINE_SPEAK:x}, apply_sub=True"
                 )
                 dirty = True
 
-        # Group channels (REACT, Family, etc.) typically have no own @auth ACL --
-        # access is gated entirely by the per-channel group grant.  Add an
-        # apply_here=False, apply_sub=True @auth grant so temps under this
-        # channel inherit Enter+Speak for any authenticated user.  The channel
-        # itself stays members-only (apply_here=False), preserving the existing
-        # security model.
-        if not is_root and not any(a.group == "auth" for a in own_acls):
-            own_acls.append(Murmur.ACL(
-                applyHere=False, applySubs=True, inherited=False,
-                userid=-1, group="auth", allow=PERM_BASELINE_SPEAK, deny=0,
-            ))
-            self.logger.info(
-                f"Adding @auth sub-grant on channel_id={channel_id} "
-                f"name={channel_name}: allow=0x{PERM_BASELINE_SPEAK:x}, apply_sub=True"
-            )
-            dirty = True
+            if not dirty:
+                return
 
-        if not dirty:
-            return
-
-        try:
-            server.setACL(channel_id, own_acls, groups, inherit)
-            self.logger.info(
-                f"Committed ACL update on channel_id={channel_id} name={channel_name}"
-            )
-        except Exception as e:
-            self.logger.error(
-                f"setACL({channel_id}, name={channel_name}) failed: {e}",
-                exc_info=True,
-            )
+            try:
+                server.setACL(channel_id, own_acls, groups, inherit)
+                self.logger.info(
+                    f"Committed ACL update on channel_id={channel_id} name={channel_name}"
+                )
+            except Exception as e:
+                self.logger.error(
+                    f"setACL({channel_id}, name={channel_name}) failed: {e}",
+                    exc_info=True,
+                )
 
     def request_sync(self):
         """Trigger a channel sync on all booted servers off-thread.
@@ -430,15 +463,27 @@ class MumbleIceApp(Ice.Application):
         """
 
         try:
-            self.attach_callbacks()
-        except Ice.Exception as e:
-            self.logger.warning(
-                "{}: Failed connection check, will retry in next watchdog run ({}s)".format(e, 10)
-            )
-
-        # Renew the timer
-        self.watchdog = Timer(10, self.check_connection)
-        self.watchdog.start()
+            try:
+                self.attach_callbacks()
+            except Ice.Exception as e:
+                self.logger.warning(
+                    "{}: Failed connection check, will retry in next watchdog run ({}s)".format(e, 10)
+                )
+            except Exception as e:
+                # Anything other than an Ice exception (a SQLAlchemy error
+                # from sync_channels_from_groups, a runtime bug, etc.) would
+                # otherwise propagate out and break the watchdog Timer chain,
+                # leaving OTS unable to recover from future Murmur restarts.
+                self.logger.error(
+                    f"Unexpected error in watchdog reattach: {e}", exc_info=True
+                )
+        finally:
+            # Always re-arm the timer, even if attach_callbacks raised
+            # something unexpected.  daemon=True so the timer thread doesn't
+            # block process shutdown.
+            self.watchdog = Timer(10, self.check_connection)
+            self.watchdog.daemon = True
+            self.watchdog.start()
 
 
 class DirectionEnforcementCallback(Murmur.ServerCallback):
