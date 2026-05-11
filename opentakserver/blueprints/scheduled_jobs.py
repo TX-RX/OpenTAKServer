@@ -469,15 +469,13 @@ def cleanup_unmanaged_mumble_channels():
                 if channel_id in occupied:
                     continue
 
-                last_active = ice_app._channel_last_active.get(
-                    channel_id, ice_app.service_start_time
-                )
+                last_active = ice_app.get_channel_last_active(channel_id)
                 if last_active > threshold:
                     continue
 
                 try:
                     server.removeChannel(channel_id)
-                    ice_app._channel_last_active.pop(channel_id, None)
+                    ice_app.forget_channel_activity(channel_id)
                     logger.info(
                         f"Deleted idle unmanaged Mumble channel '{ch.name}' "
                         f"(id={channel_id}, idle_since={last_active.isoformat()})"

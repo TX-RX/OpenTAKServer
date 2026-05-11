@@ -171,7 +171,7 @@ deleted.
 |---|---|---|
 | `OTS_ENABLE_MUMBLE_AUTHENTICATION` | `False` | Master switch — enables the Ice authenticator and the daemon |
 | `OTS_ICE_SECRET` | `""` | Must match Murmur's `icesecretread`/`icesecretwrite` in `/etc/mumble-server.ini` |
-| `OTS_MUMBLE_ENABLE_CONFERENCE_CALLS` | `True` | Grants MakeTempChannel to non-admins and applies the conference ACL to new temp channels. Set `False` to revert to the legacy admin-only model |
+| `OTS_MUMBLE_ENABLE_CONFERENCE_CALLS` | `True` | Adds the ACL grants that enable non-admin VX calls: MakeTempChannel on Root + each OTS-managed channel, @auth `apply_sub=True` sub-grant on group channels (temps inherit Enter/Speak), and full admin grant on every OTS channel. Set `False` to revert to the legacy admin-only model |
 | `OTS_MUMBLE_CHANNEL_CLEANUP_ENABLED` | `True` | Master switch for the periodic cleanup job |
 | `OTS_MUMBLE_CHANNEL_CLEANUP_IDLE_DAYS` | `5` | How long a channel must be idle before deletion |
 
