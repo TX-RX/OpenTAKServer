@@ -151,6 +151,10 @@ class DefaultConfig:
     # survive as long as they're in use.
     OTS_MUMBLE_CHANNEL_CLEANUP_ENABLED = True
     OTS_MUMBLE_CHANNEL_CLEANUP_IDLE_DAYS = 5
+    # Snapshot temp-channel ACLs ~1.5s after creation to capture what the
+    # VX plugin configures client-side.  Useful for interop work; safe to
+    # leave on, but turn off if you don't need the noise in the OTS log.
+    OTS_MUMBLE_LOG_POST_VX_ACL = True
 
     OTS_IP_WHITELIST = ["127.0.0.1"]
 

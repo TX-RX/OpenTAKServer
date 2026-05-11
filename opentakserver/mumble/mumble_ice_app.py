@@ -667,12 +667,57 @@ class DirectionEnforcementCallback(Murmur.ServerCallback):
                 f"Temp channel ACL augmented: id={channel_id} name='{channel_name}' "
                 f"added auth=0x{PERM_BASELINE_SPEAK:x}, preserved creator-admin uids={creator_uids}"
             )
+
+            # Diagnostic: VX's client-side setACL fires ~160ms after channel
+            # creation -- after ours.  Capture the final ACL state to see what
+            # VX actually configures on its call channel (informs interop work
+            # since VX's intent isn't documented anywhere).  Disable via
+            # OTS_MUMBLE_LOG_POST_VX_ACL=False once interop is dialed in.
+            if self.app.config.get("OTS_MUMBLE_LOG_POST_VX_ACL", True):
+                threading.Thread(
+                    target=self._capture_post_vx_acl,
+                    args=(channel_id, channel_name),
+                    daemon=True,
+                ).start()
         except Exception as e:
             self.logger.error(
                 f"Failed to set temp channel ACL on id={channel_id} "
                 f"name='{channel_name}': {e}",
                 exc_info=True,
             )
+
+    def _capture_post_vx_acl(self, channel_id, channel_name):
+        """Snapshot the ACL ~1.5s after channel creation to capture whatever
+        VX configured client-side after our setACL completed.  Tolerant of the
+        channel being gone (caller bailed out before VX's setACL landed)."""
+        time.sleep(1.5)
+        try:
+            acls, groups, inherit = self.server.getACL(channel_id)
+        except Murmur.InvalidChannelException:
+            self.logger.debug(
+                f"POST-VX ACL capture: channel id={channel_id} gone before snapshot"
+            )
+            return
+        except Exception as e:
+            self.logger.warning(
+                f"POST-VX ACL capture failed for id={channel_id} name='{channel_name}': {e}"
+            )
+            return
+
+        acl_dump = ", ".join(
+            f"{a.group or f'uid:{a.userid}'}/allow=0x{a.allow:x}/deny=0x{a.deny:x}"
+            f"/here={int(a.applyHere)}/sub={int(a.applySubs)}/inh={int(a.inherited)}"
+            for a in acls
+        )
+        grp_dump = ", ".join(
+            f"{g.name}/inh={int(g.inherited)}/inheritable={int(g.inheritable)}"
+            f"/add={list(g.add)}/remove={list(g.remove)}/members={list(g.members)}"
+            for g in groups
+        )
+        self.logger.info(
+            f"POST-VX ACL temp id={channel_id} name='{channel_name}' "
+            f"inherit={inherit} acls=[{acl_dump}] groups=[{grp_dump}]"
+        )
 
     def channelRemoved(self, state, current=None):
         self._channel_cache = None
