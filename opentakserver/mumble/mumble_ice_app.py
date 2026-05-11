@@ -288,12 +288,28 @@ class MumbleIceApp(Ice.Application):
             self._ensure_make_temp_channel_acl(server, channel_id, ch.name)
 
     def _ensure_make_temp_channel_acl(self, server, channel_id, channel_name):
-        """Idempotently OR MakeTempChannel into auth/<channel_name>/admin grants.
+        """Idempotently set the ACL needed for VX direct calls on a persistent
+        channel.  Three guarantees:
+
+        1. The channel's own group/auth grant has MakeTempChannel so users
+           can create temp channels under it (the call lifecycle).
+        2. The `admin` grant has the full PERM_ADMIN_FULL mask with
+           apply_sub=True so OTS administrators can administer the server
+           (move, kick, ban, manage ACLs) on every OTS channel AND on any
+           subchannel/temp created beneath it.
+        3. An `auth` grant exists with apply_sub=True so temp channels
+           created under this channel inherit Enter/Speak/Whisper/Text for
+           any authenticated user.  On Root that grant also applies here
+           (users can speak in Root itself).  On group channels apply_here
+           stays False so the channel itself remains members-only.
+
+        Guarantee #3 is what makes per-temp ACL setACL hooks unnecessary --
+        the @auth grant flows down via inheritance so we don't have to
+        intervene every time VX creates a temp.
 
         Only modifies non-inherited entries; inherited rows are filtered out
-        before setACL (passing them back would shadow the parent's ACL and
-        break propagation).  Skips any existing entry that already has the
-        bit set, so this is safe to re-run on every watchdog tick.
+        before setACL (passing them back would shadow the parent's ACL).
+        Idempotent — safe to re-run.
         """
         try:
             acls, groups, inherit = server.getACL(channel_id)
@@ -303,11 +319,13 @@ class MumbleIceApp(Ice.Application):
             )
             return
 
+        is_root = (channel_id == 0)
+        own_acls = [a for a in acls if not a.inherited]
+
         targets = {"auth", "admin"}
         if channel_name and channel_name not in ("Root", "__ANON__"):
             targets.add(channel_name)
 
-        own_acls = [a for a in acls if not a.inherited]
         dirty = False
         for acl in own_acls:
             if acl.group not in targets:
@@ -316,14 +334,13 @@ class MumbleIceApp(Ice.Application):
             new_allow = acl.allow | PERM_MAKE_TEMP_CHANNEL
             new_apply_subs = acl.applySubs
 
-            # OTS administrators get the same full grant Murmur uses on Root
-            # (Write, Move, Kick, Ban, Register, MakeTempChannel, etc.) with
-            # apply_sub=1 so the grant propagates into any sub/temp channel
-            # created beneath an OTS-managed channel.  This is what makes
-            # "OTS admin" mean "Mumble server administrator" — they can move
-            # users, kick, ban, manage ACLs, etc. on every OTS channel.
             if acl.group == "admin":
                 new_allow |= PERM_ADMIN_FULL
+                new_apply_subs = True
+
+            if acl.group == "auth":
+                # @auth must propagate to subchannels so VX temps inherit
+                # Enter+Speak+Whisper+TextMessage without per-temp intervention.
                 new_apply_subs = True
 
             if new_allow != acl.allow or new_apply_subs != acl.applySubs:
@@ -337,6 +354,23 @@ class MumbleIceApp(Ice.Application):
                     f"apply_sub {before_sub} -> {acl.applySubs}"
                 )
                 dirty = True
+
+        # Group channels (REACT, Family, etc.) typically have no own @auth ACL --
+        # access is gated entirely by the per-channel group grant.  Add an
+        # apply_here=False, apply_sub=True @auth grant so temps under this
+        # channel inherit Enter+Speak for any authenticated user.  The channel
+        # itself stays members-only (apply_here=False), preserving the existing
+        # security model.
+        if not is_root and not any(a.group == "auth" for a in own_acls):
+            own_acls.append(Murmur.ACL(
+                applyHere=False, applySubs=True, inherited=False,
+                userid=-1, group="auth", allow=PERM_BASELINE_SPEAK, deny=0,
+            ))
+            self.logger.info(
+                f"Adding @auth sub-grant on channel_id={channel_id} "
+                f"name={channel_name}: allow=0x{PERM_BASELINE_SPEAK:x}, apply_sub=True"
+            )
+            dirty = True
 
         if not dirty:
             return
@@ -618,128 +652,12 @@ class DirectionEnforcementCallback(Murmur.ServerCallback):
         pass
 
     def channelCreated(self, state, current=None):
+        # Per-temp ACL intervention is no longer needed: the @auth grant on
+        # parent channels (set by _ensure_make_temp_channel_acl) propagates
+        # to temps via inheritance, and Murmur auto-creates a creator-admin
+        # group on each temp for VX's call lifecycle management.  We only
+        # need to invalidate the channel cache here.
         self._channel_cache = None
-        if not state.temporary:
-            return
-        if not self.app.config.get("OTS_MUMBLE_ENABLE_CONFERENCE_CALLS", True):
-            return
-        # Dispatch the ACL set off the Ice thread — setACL is a synchronous
-        # Ice call and would otherwise block the dispatcher.  Same pattern as
-        # _dispatch_apply for direction enforcement.
-        threading.Thread(
-            target=self._apply_temp_channel_acl,
-            args=(state.id, state.name),
-            daemon=True,
-        ).start()
-
-    def _apply_temp_channel_acl(self, channel_id, channel_name):
-        """Augment a freshly-created temp channel with a conference-capable ACL.
-
-        Murmur's default temp setup already grants the creator admin perms on
-        their own temp (via an auto-created local `admin` group with the
-        creator's userid added) plus inherits @all/Traverse and admin/full from
-        Root.  That's what lets the VX plugin manage its temp post-creation
-        (set call ACL, move users at end-call, delete the temp).  But the
-        default doesn't grant non-creator @auth users Enter/Speak — so a
-        callee from a different OTS group can't join.
-
-        This function ADDS an explicit @auth=Enter|Speak|Whisper|TextMessage
-        entry while preserving Murmur's defaults (inherit=True, all local
-        groups kept).  Result: cross-group conferences work AND creator
-        retains admin on their own temp for VX's call lifecycle.
-        """
-        try:
-            # Read what Murmur set up: implicit creator-admin group + inherited
-            # ACLs.  We preserve everything and just layer @auth Enter/Speak on top.
-            try:
-                pre_acls, pre_groups, _pre_inherit = self.server.getACL(channel_id)
-            except Exception as e:
-                self.logger.error(
-                    f"getACL on new temp id={channel_id} failed, skipping ACL set: {e}"
-                )
-                return
-
-            # Keep only locally-defined groups (notably the creator-admin entry
-            # Murmur auto-creates).  Inherited groups are recreated by Murmur
-            # from the parent chain — passing them back would shadow inheritance.
-            local_groups = [g for g in pre_groups if not g.inherited]
-
-            # Keep existing non-inherited ACLs (in case Murmur or VX set
-            # something specific), then add our @auth Enter/Speak grant.
-            own_acls = [a for a in pre_acls if not a.inherited]
-            has_auth_speak = any(
-                a.group == "auth" and (a.allow & PERM_BASELINE_SPEAK) == PERM_BASELINE_SPEAK
-                for a in own_acls
-            )
-            if not has_auth_speak:
-                own_acls.append(Murmur.ACL(
-                    applyHere=True, applySubs=False, inherited=False,
-                    userid=-1, group="auth", allow=PERM_BASELINE_SPEAK, deny=0,
-                ))
-
-            # inherit=True preserves @all/Traverse + admin/full from Root, plus
-            # the creator-admin group membership chain.
-            self.server.setACL(channel_id, own_acls, local_groups, True)
-
-            preserved_creator = next(
-                (g for g in local_groups if g.name == "admin" and g.add), None
-            )
-            creator_uids = list(preserved_creator.add) if preserved_creator else []
-            self.logger.info(
-                f"Temp channel ACL augmented: id={channel_id} name='{channel_name}' "
-                f"added auth=0x{PERM_BASELINE_SPEAK:x}, preserved creator-admin uids={creator_uids}"
-            )
-
-            # Diagnostic: VX's client-side setACL fires ~160ms after channel
-            # creation -- after ours.  Capture the final ACL state to see what
-            # VX actually configures on its call channel (informs interop work
-            # since VX's intent isn't documented anywhere).  Disable via
-            # OTS_MUMBLE_LOG_POST_VX_ACL=False once interop is dialed in.
-            if self.app.config.get("OTS_MUMBLE_LOG_POST_VX_ACL", True):
-                threading.Thread(
-                    target=self._capture_post_vx_acl,
-                    args=(channel_id, channel_name),
-                    daemon=True,
-                ).start()
-        except Exception as e:
-            self.logger.error(
-                f"Failed to set temp channel ACL on id={channel_id} "
-                f"name='{channel_name}': {e}",
-                exc_info=True,
-            )
-
-    def _capture_post_vx_acl(self, channel_id, channel_name):
-        """Snapshot the ACL ~1.5s after channel creation to capture whatever
-        VX configured client-side after our setACL completed.  Tolerant of the
-        channel being gone (caller bailed out before VX's setACL landed)."""
-        time.sleep(1.5)
-        try:
-            acls, groups, inherit = self.server.getACL(channel_id)
-        except Murmur.InvalidChannelException:
-            self.logger.debug(
-                f"POST-VX ACL capture: channel id={channel_id} gone before snapshot"
-            )
-            return
-        except Exception as e:
-            self.logger.warning(
-                f"POST-VX ACL capture failed for id={channel_id} name='{channel_name}': {e}"
-            )
-            return
-
-        acl_dump = ", ".join(
-            f"{a.group or f'uid:{a.userid}'}/allow=0x{a.allow:x}/deny=0x{a.deny:x}"
-            f"/here={int(a.applyHere)}/sub={int(a.applySubs)}/inh={int(a.inherited)}"
-            for a in acls
-        )
-        grp_dump = ", ".join(
-            f"{g.name}/inh={int(g.inherited)}/inheritable={int(g.inheritable)}"
-            f"/add={list(g.add)}/remove={list(g.remove)}/members={list(g.members)}"
-            for g in groups
-        )
-        self.logger.info(
-            f"POST-VX ACL temp id={channel_id} name='{channel_name}' "
-            f"inherit={inherit} acls=[{acl_dump}] groups=[{grp_dump}]"
-        )
 
     def channelRemoved(self, state, current=None):
         self._channel_cache = None
