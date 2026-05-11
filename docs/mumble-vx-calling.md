@@ -77,48 +77,66 @@ auto-synced channel revokes baseline access from `@all` and grants it back
 only to the channel's named group, so group channels are private to their
 members.
 
-| Channel | Group | Grant mask | Notes |
-|---|---|---|---|
-| Root (id=0) | `@all` | `Traverse` | Visible to everyone |
-| Root | `auth` | `Traverse \| Enter \| Speak \| Whisper \| TextMessage \| MakeTempChannel` (`0x70e`) | Lets any authenticated user open a VX temp at root level |
-| Root | `admin` | All admin perms (`0x707ff`) | Full Murmur admin |
-| Group channels (one per OTS group) | `all` | revoke `0x30e` | Strip baseline access from non-members |
-| Group channels | `<groupname>` | `0x70e` | Members get speak + MakeTempChannel for in-group temps |
-| Group channels | `admin` | `0x77f` | Admins keep full per-channel control incl. temp creation |
-| Temp channels (created by VX) | `@all` | `Traverse` | Discoverable by all |
-| Temp channels | `auth` | `0x30e` | Any authenticated user can enter and speak — this is what makes cross-group conferences work |
-| Temp channels | `admin` | `0x707ff` | Admins keep full control |
+| Channel | Group | Grant mask | apply_here / apply_sub | Notes |
+|---|---|---|---|---|
+| Root (id=0) | `@all` | `Traverse` (`0x2`) | here=1, sub=1 | Visible to everyone, propagates to subchannels |
+| Root | `auth` | `0x70e` | here=1, sub=1 | Lets any auth user speak in Root AND inherits Enter+Speak to temps |
+| Root | `admin` | `0x707ff` | here=1, sub=1 | Full Murmur admin, inherits to all subchannels |
+| Group channels (one per OTS group) | `all` | revoke `0x30e` | here=1, sub=0 | Strip baseline access from non-members; channel itself only |
+| Group channels | `<groupname>` | `0x70e` | here=1, sub=0 | Members get speak + MakeTempChannel for in-group temps |
+| Group channels | `admin` | `0x707ff` | here=1, sub=1 | Full admin on the channel AND inherits to any temp beneath |
+| Group channels | `auth` | `0x30e` | here=0, sub=1 | **Sub-only grant** — temps inherit Enter/Speak/Whisper/Text without making the group channel itself public |
+| Temp channels (created by VX) | (mostly inherited) | — | — | See "How temp ACLs work" below — we don't override |
 
 **Move (`0x20`) is intentionally not granted to non-admin groups.** Standard
 users cannot drag other users between channels — only admins can. VX direct
-calls work via self-join, not by the initiator dragging the recipient.
+calls work via self-join (and via the caller's own creator-admin power on
+their own temp), not by the initiator dragging the recipient.
 
-### How the temp ACL is applied
+### How temp channel ACLs work (inheritance, not per-temp setACL)
 
-`DirectionEnforcementCallback.channelCreated` fires every time a channel is
-created. When `state.temporary == True`, the callback dispatches an Ice
-`setACL(channel_id, [...], inherit=False)` on a background thread. The
-ACL is fully self-contained (`inherit=False`) so the temp's behavior is
-identical regardless of where VX places it — whether under Root or under a
-locked-down group channel that wouldn't propagate any useful ACL via
-inheritance.
+We do **not** call `setACL` on every newly created temp. Murmur's own
+behavior handles per-temp permissions correctly as long as the parent
+channels are set up right:
+
+1. **Murmur auto-creates a local `admin` group** on each new temp and
+   adds the **creator's userid** to it. This gives the creator full
+   Write/Move/etc. on their own temp via the inherited `admin/0x707ff`
+   grant from Root — even if the creator is a non-admin OTS user. That's
+   how VX's "Updated ACL in channel" call (which the plugin issues
+   ~160ms after channel creation) succeeds for everyone.
+
+2. **The `@auth` apply_sub=1 grant on parent channels** propagates
+   Enter+Speak+Whisper+TextMessage down to the temp. On Root this means
+   any auth user can enter a Root-level temp; on group channels it means
+   any auth user (including someone from a different OTS group) can
+   enter the temp, enabling cross-group conferences.
+
+3. **`@all` apply_sub=1 from Root** propagates `Traverse` so the temp is
+   visible to everyone.
+
+Net effect: zero Ice calls during the VX call lifecycle. The temp's
+permissions are correct by inheritance from its parent.
 
 ### How the persistent ACLs are kept correct
 
-`MumbleIceApp.sync_channels_from_groups` runs on startup and on every
-watchdog tick (10s). It walks Root + every OTS-managed channel and calls
-`_ensure_make_temp_channel_acl`, which:
+`MumbleIceApp.sync_channels_from_groups` runs on startup and on demand
+(from `group_api.request_sync()` after add/delete). It walks Root + every
+OTS-managed channel and calls `_ensure_make_temp_channel_acl`, which
+idempotently ensures each channel has:
 
-1. Reads the channel's ACL via `getACL`.
-2. Filters out inherited entries (passing them back would shadow parents).
-3. ORs `MakeTempChannel` (`0x400`) into the `auth` / `<channel-name>` /
-   `admin` grants if missing.
-4. Writes back via `setACL`. Idempotent — runs that don't change anything
-   are silent.
+1. `MakeTempChannel` (`0x400`) on the `<groupname>` / `auth` / `admin` grants
+   so users can create call channels.
+2. `admin` set to the full `0x707ff` grant with `apply_sub=True` so admins
+   keep server-administrator perms on every OTS channel and any subchannel.
+3. An `@auth` grant of `0x30e` with `apply_here=False, apply_sub=True` on
+   group channels (added if missing). This is the sub-only grant that
+   makes temps inherit Enter+Speak.
 
-This pattern survives manual ACL edits through Mumble's GUI: only the
-`MakeTempChannel` bit is forced, every other grant the admin set up by hand
-is preserved.
+The function reads existing ACLs, modifies in place, filters out inherited
+rows, and writes back. Idempotent — runs that find nothing to change are
+silent. Manual ACL edits through Mumble's GUI are preserved (we only
+ensure the specific bits/grants above; other entries are untouched).
 
 ## Channel cleanup
 
@@ -166,49 +184,54 @@ the same pattern as every other scheduled OTS job.
 ### Standard user gets "Permission denied" when creating a temp channel
 
 Confirm `OTS_MUMBLE_ENABLE_CONFERENCE_CALLS` is `True` in your config and
-the OTS service has been restarted at least once after upgrading. On
-startup you should see lines like:
+OTS has been restarted at least once after upgrading. On startup you
+should see lines like:
 
 ```
-Granting MakeTempChannel on channel_id=N name=<name> group=<group>: 0x30e -> 0x70e
-Committed ACL update on channel_id=N name=<name>
+Updating ACL on channel_id=0 name=Root group=auth: allow 0x70e -> 0x70e, apply_sub False -> True
+Adding @auth sub-grant on channel_id=6 name=REACT: allow=0x30e, apply_sub=True
+Committed ACL update on channel_id=6 name=REACT
 ```
 
-If those lines never appear, OTS's Ice connection to Murmur is failing —
-check `OTS_ICE_SECRET` matches what's in `/etc/mumble-server.ini`.
+If those lines never appear on startup, OTS's Ice connection to Murmur is
+failing — check `OTS_ICE_SECRET` matches what's in `/etc/mumble-server.ini`.
 
-To inspect the live ACL on the Murmur side directly:
+Once the ACLs are in place they're idempotent — subsequent startups won't
+re-log them. To verify the live ACL on the Murmur side directly:
 
 ```sh
 sudo sqlite3 -header -column /var/lib/mumble-server/mumble-server.sqlite \
-  "SELECT channel_id, priority, group_name, \
+  "SELECT channel_id, priority, group_name, apply_here, apply_sub, \
           printf('0x%x', grantpriv) AS grant_hex, \
           printf('0x%x', revokepriv) AS revoke_hex \
    FROM acl ORDER BY channel_id, priority;"
 ```
 
-The `auth` row on Root and the `<groupname>` rows on each managed channel
-should have `0x70e` (or higher) in `grant_hex`.
+Expected on each group channel: an `auth` row with `apply_here=0, apply_sub=1,
+grant_hex=0x30e`, plus `admin` row with `apply_sub=1, grant_hex=0x707ff`, plus
+`<groupname>` row with `grant_hex=0x70e`.
 
 ### User from group A can't join a temp channel created by group B
 
-Confirm the temp channel actually got the conference ACL applied — the OTS
-log should contain a line like:
+Inheritance might not be propagating. Check the live ACL (sqlite query
+above) on the parent of the temp channel. The parent (Root or whichever
+OTS group channel) must have a `@auth` row with `apply_sub=1` and
+`grant_hex` of at least `0x30e`. If that row is missing, run an OTS
+restart — `_ensure_make_temp_channel_acl` will add it on startup.
 
-```
-Temp channel ACL set: id=N name='<temp-name>' (auth=0x30e, admin=0x707ff)
-```
-
-If it's missing, the `channelCreated` callback may not be firing — check
-that `Direction enforcement callback attached to server N` appeared on
-startup, and that there are no exceptions from `_apply_temp_channel_acl`.
+VX clients also need to coordinate the call (the signaling layer is
+plugin-internal and not visible to the server). If the ACL is correct
+but the callee still can't reach the temp, check VX-side first
+(server-side ACL is no longer the bottleneck).
 
 ### Standard user can't drag another user into a temp
 
-This is **expected behavior**. `Move` is admin-only by design. VX itself
-does not need this — it uses self-join via OTS CoT coordination — so a
-correctly-functioning VX call does not require the initiator to drag the
-recipient.
+This is **expected behavior**. `Move` is admin-only by design at the OTS
+group level. The caller doesn't need it for VX — VX moves users via
+whisper (VoiceTarget) and via each client's own self-join, not by the
+initiator dragging the recipient. The caller also has `Move` *on their
+own temp* automatically via Murmur's creator-admin group, which is enough
+for any in-call moves the plugin needs to do.
 
 ### Stale event channels accumulating
 
@@ -235,9 +258,32 @@ If a channel is *not* getting deleted that you think should be, check:
 | Concern | File / function |
 |---|---|
 | Authenticator (resolves callsign-with-UUID, cert CN, etc.) | `opentakserver/mumble/mumble_authenticator.py::MumbleAuthenticator.resolve_identity` |
-| Per-temp ACL hook | `opentakserver/mumble/mumble_ice_app.py::DirectionEnforcementCallback.channelCreated` |
-| MakeTempChannel ACL bump on persistent channels | `opentakserver/mumble/mumble_ice_app.py::MumbleIceApp._ensure_make_temp_channel_acl` |
-| Direction enforcement (IN/OUT suppress flag) | `opentakserver/mumble/mumble_ice_app.py::DirectionEnforcementCallback._apply_direction` |
+| Persistent-channel ACL setup (MakeTempChannel + admin elevation + @auth sub-grant) | `opentakserver/mumble/mumble_ice_app.py::MumbleIceApp._ensure_make_temp_channel_acl` |
+| `channelCreated` callback (now just cache invalidation — no per-temp setACL) | `opentakserver/mumble/mumble_ice_app.py::DirectionEnforcementCallback.channelCreated` |
+| Direction enforcement (in-memory suppress tracking) | `opentakserver/mumble/mumble_ice_app.py::DirectionEnforcementCallback._apply_direction` |
 | Channel auto-sync from OTS groups | `opentakserver/mumble/mumble_ice_app.py::MumbleIceApp.sync_channels_from_groups` |
 | Idle channel cleanup job | `opentakserver/blueprints/scheduled_jobs.py::cleanup_unmanaged_mumble_channels` |
 | Murmur permission constants | `opentakserver/mumble/Murmur.ice` (search `Permission*`) |
+| VX direct-call protocol (sister doc) | [`vx-direct-call-protocol.md`](./vx-direct-call-protocol.md) |
+
+## Operational caveats
+
+- **OTS auto-recovers after a Murmur restart.** A 10-second watchdog timer
+  in `MumbleIceApp.check_connection()` reattaches the meta callback and
+  authenticator after a Murmur restart. There's still a brief window
+  (up to 10s) where new connections are rejected with
+  `Wrong certificate or password for existing user` until the watchdog
+  reattaches. If you need a faster recovery, restart OTS too — but you
+  no longer *have* to.
+
+- **VX 1.0.0 clients reconnect every few minutes by design.** You'll see
+  bursts of simultaneous `Connection closed` + `New connection` lines for
+  every VX client at roughly 3-5 minute intervals, even when nothing is
+  happening. This is the plugin's TLS reset cycle. Not a bug.
+
+- **Caller appears stuck in Root after End Call for up to ~60 seconds.**
+  After ending a call, VX moves the caller to Root as an intermediate
+  state, then to their original channel. The delay between the two moves
+  is client-side and varies by VX version. Nothing OTS can do about it
+  without a server-side auto-move-on-auth feature (which would mask the
+  symptom but introduce its own preference logic).
