@@ -416,6 +416,13 @@ class DirectionEnforcementCallback(Murmur.ServerCallback):
         self._channel_cache_time = 0
         self._session_lock = threading.Lock()
         self._session_cache = {}  # session_id -> {directions, is_admin, cached_at}
+        # Sessions we've actively set suppress=True for.  Used so steady-state
+        # channel moves make zero Ice calls -- we only round-trip to Murmur
+        # when a user actually crosses an IN<->OUT boundary.  For environments
+        # with no OUT memberships this set stays empty forever and direction
+        # enforcement is effectively free.
+        self._suppressed_sessions = set()
+        self._suppress_lock = threading.Lock()
 
     # ------------------------------------------------------------------ helpers
 
@@ -494,56 +501,63 @@ class DirectionEnforcementCallback(Murmur.ServerCallback):
         ).start()
 
     def _apply_direction(self, session, username, channel_id, group_directions, is_admin):
-        """Background thread: apply suppress flag via Ice calls only."""
+        """Apply the suppress flag based on the user's OTS direction.
+
+        Uses in-memory tracking (_suppressed_sessions) so the common case --
+        a user moving between channels where direction is IN or undefined --
+        makes zero Ice calls.  Only round-trips to Murmur when the desired
+        suppress bit actually has to flip.
+        """
         try:
-            # Admins are never suppressed by this callback, so skip all Ice calls.
-            # Calling getState() here blocks for 30s and crashes the connection.
             if is_admin:
                 return
 
             channel_map = self._get_channel_map()
             channel_name = channel_map.get(channel_id, f"unknown({channel_id})")
 
-            # Root channel: always allow speaking
-            if channel_name == 'Root':
-                try:
-                    s = self.server.getState(session)
-                    if s.suppress:
-                        s.suppress = False
-                        self.server.setState(s)
-                        self.logger.info(f"UNMUTED (Root): {username}")
-                except Exception as e:
-                    self.logger.error(f"Failed to clear suppress for '{username}' in Root: {e}")
-                return
-
+            # Root and non-OTS channels (VX temps, event channels) are not
+            # subject to direction enforcement -- treat as if direction=IN.
             direction = group_directions.get(channel_name)
-            if direction is None:
-                # Non-OTS channel (temp channel for VX private call, or an
-                # admin-created event channel).  Direction enforcement is an
-                # OTS group concept; outside an OTS group, a user who was
-                # suppressed in their previous channel must be un-suppressed
-                # so they can actually speak in the call they just joined.
-                try:
-                    s = self.server.getState(session)
-                    if s.suppress:
-                        s.suppress = False
-                        self.server.setState(s)
-                        self.logger.info(
-                            f"SPEAK ENABLED (non-OTS channel): {username} in {channel_name}"
-                        )
-                except Exception as e:
-                    self.logger.error(
-                        f"Failed to clear suppress for '{username}' in {channel_name}: {e}"
-                    )
-                return
-
-            s = self.server.getState(session)
             should_suppress = (direction == 'OUT')
 
-            if should_suppress and not s.suppress:
-                s.suppress = True
+            with self._suppress_lock:
+                currently_suppressed = session in self._suppressed_sessions
+
+            if should_suppress == currently_suppressed:
+                return  # No state change needed; no Ice call.
+
+            try:
+                s = self.server.getState(session)
+            except Murmur.InvalidSessionException:
+                # Session disconnected between dispatch and execution -- normal.
+                self.logger.debug(
+                    f"Direction: session {session} ({username}) gone before getState"
+                )
+                with self._suppress_lock:
+                    self._suppressed_sessions.discard(session)
+                return
+
+            s.suppress = should_suppress
+            try:
                 self.server.setState(s)
-                self.logger.info(f"LISTEN ONLY: {username} in {channel_name} (direction=OUT)")
+            except Murmur.InvalidSessionException:
+                self.logger.debug(
+                    f"Direction: session {session} ({username}) gone before setState"
+                )
+                with self._suppress_lock:
+                    self._suppressed_sessions.discard(session)
+                return
+
+            with self._suppress_lock:
+                if should_suppress:
+                    self._suppressed_sessions.add(session)
+                else:
+                    self._suppressed_sessions.discard(session)
+
+            if should_suppress:
+                self.logger.info(
+                    f"LISTEN ONLY: {username} in {channel_name} (direction=OUT)"
+                )
                 try:
                     self.server.sendMessage(
                         session,
@@ -551,12 +565,18 @@ class DirectionEnforcementCallback(Murmur.ServerCallback):
                     )
                 except Exception:
                     pass
+            else:
+                self.logger.info(
+                    f"SPEAK ENABLED: {username} in {channel_name} "
+                    f"(direction={direction or 'non-OTS'})"
+                )
 
-            elif not should_suppress and s.suppress:
-                s.suppress = False
-                self.server.setState(s)
-                self.logger.info(f"SPEAK ENABLED: {username} in {channel_name} (direction=IN)")
-
+        except Murmur.InvalidSessionException:
+            self.logger.debug(
+                f"Direction: session {session} ({username}) gone during apply"
+            )
+            with self._suppress_lock:
+                self._suppressed_sessions.discard(session)
         except Exception as e:
             self.logger.error(
                 f"Unhandled error applying direction for '{username}' session={session}: {e}",
@@ -584,6 +604,8 @@ class DirectionEnforcementCallback(Murmur.ServerCallback):
     def userDisconnected(self, state, current=None):
         with self._session_lock:
             self._session_cache.pop(state.session, None)
+        with self._suppress_lock:
+            self._suppressed_sessions.discard(state.session)
         self.logger.info(f"User disconnected: {state.name} (session={state.session})")
 
     def userStateChanged(self, state, current=None):
