@@ -37,7 +37,8 @@ from opentakserver.models.Group import Group
 from opentakserver.models.GroupMission import GroupMission
 from opentakserver.models.GroupUser import GroupUser
 from opentakserver.models.Mission import Mission
-from opentakserver.models.MissionChange import MissionChange
+from opentakserver.models.MissionChange import MissionChange, generate_mission_change_cot
+from opentakserver.models.MissionContent import MissionContent
 from opentakserver.models.MissionContentMission import MissionContentMission
 from opentakserver.models.MissionInvitation import MissionInvitation
 from opentakserver.models.MissionLogEntry import MissionLogEntry
@@ -415,3 +416,164 @@ def invite_eud():
         return jsonify({"success": False, "error": gettext("Invalid password")}), 401
 
     return invite(mission_name, "clientuid", eud_uid)
+
+
+@data_sync_api.route(
+    "/api/missions/guid/<mission_guid>/attach_content", methods=["POST"]
+)
+@roles_required("administrator")
+def attach_mission_content(mission_guid: str):
+    """Attach already-uploaded MissionContent rows to a mission identified by GUID.
+
+    Recovery path for orphan content created when a mission is recreated under
+    the same name (issue #300: Mission.name is the PK and FKs do not cascade).
+    Keying by GUID lets this survive future renames of the target mission.
+    """
+    body = request.get_json(silent=True) or {}
+    hashes = body.get("hashes")
+    if not isinstance(hashes, list) or not all(isinstance(h, str) for h in hashes):
+        return (
+            jsonify(
+                {"success": False, "error": gettext("Body must contain a 'hashes' list of strings")}
+            ),
+            400,
+        )
+
+    mission = db.session.execute(
+        db.session.query(Mission).filter_by(guid=mission_guid)
+    ).first()
+    if not mission:
+        return (
+            jsonify(
+                {
+                    "success": False,
+                    "error": gettext(
+                        "No such mission with guid %(mission_guid)s", mission_guid=mission_guid
+                    ),
+                }
+            ),
+            404,
+        )
+    mission = mission[0]
+    mission_name = mission.name
+
+    # First pass: resolve every hash before we mutate anything.
+    contents: list[MissionContent] = []
+    missing: list[str] = []
+    for content_hash in hashes:
+        row = db.session.execute(
+            db.session.query(MissionContent).filter_by(hash=content_hash)
+        ).first()
+        if row is None:
+            missing.append(content_hash)
+        else:
+            contents.append(row[0])
+
+    if missing:
+        return (
+            jsonify(
+                {
+                    "success": False,
+                    "error": gettext("Unknown content hash(es)"),
+                    "missing": missing,
+                }
+            ),
+            404,
+        )
+
+    # Second pass: insert link rows + change rows in a single transaction.
+    newly_attached: list[dict] = []
+    already_attached: list[dict] = []
+    new_changes: list[tuple[MissionChange, MissionContent]] = []
+
+    for content in contents:
+        existing_link = db.session.execute(
+            db.session.query(MissionContentMission).filter_by(
+                mission_content_id=content.id, mission_name=mission_name
+            )
+        ).first()
+        if existing_link is None:
+            link = MissionContentMission()
+            link.mission_content_id = content.id
+            link.mission_name = mission_name
+            link.mission_guid = mission.guid
+            db.session.add(link)
+            newly_attached.append({"hash": content.hash, "filename": content.filename})
+        else:
+            link_row = existing_link[0]
+            if link_row.mission_guid is None:
+                link_row.mission_guid = mission.guid
+            already_attached.append({"hash": content.hash, "filename": content.filename})
+
+        existing_change = db.session.execute(
+            db.session.query(MissionChange).filter_by(
+                content_uid=content.uid, mission_name=mission_name
+            )
+        ).first()
+        if existing_change is None:
+            change = MissionChange()
+            change.isFederatedChange = False
+            change.change_type = MissionChange.ADD_CONTENT
+            change.content_uid = content.uid
+            change.mission_name = mission_name
+            change.timestamp = datetime.datetime.now(datetime.timezone.utc)
+            change.creator_uid = (
+                content.creator_uid
+                or getattr(mission, "creator_uid", None)
+                or current_user.username
+            )
+            change.server_time = datetime.datetime.now(datetime.timezone.utc)
+            db.session.add(change)
+            new_changes.append((change, content))
+
+    db.session.commit()
+
+    # Best-effort: publish change CoTs to subscribers. Failure here does not
+    # roll back the attach — the link rows are the source of truth and any
+    # missed clients will pick up the changes on next mission sync.
+    if new_changes:
+        try:
+            rabbit_credentials = pika.PlainCredentials(
+                app.config.get("OTS_RABBITMQ_USERNAME"),
+                app.config.get("OTS_RABBITMQ_PASSWORD"),
+            )
+            rabbit_connection = pika.BlockingConnection(
+                pika.ConnectionParameters(
+                    host=app.config.get("OTS_RABBITMQ_SERVER_ADDRESS"),
+                    credentials=rabbit_credentials,
+                )
+            )
+            channel = rabbit_connection.channel()
+            for change, content in new_changes:
+                event = generate_mission_change_cot(
+                    mission_name, mission, change, content=content
+                )
+                publish_body = json.dumps(
+                    {
+                        "uid": change.creator_uid,
+                        "cot": tostring(event).decode("utf-8"),
+                    }
+                )
+                channel.basic_publish(
+                    "missions",
+                    routing_key=f"missions.{mission_name}",
+                    body=publish_body,
+                )
+            channel.close()
+            rabbit_connection.close()
+        except Exception:
+            logger.error(
+                "attach_mission_content: failed to publish change CoTs; "
+                "DB state is committed.\n%s",
+                traceback.format_exc(),
+            )
+
+    return jsonify(
+        {
+            "success": True,
+            "mission_name": mission_name,
+            "mission_guid": mission.guid,
+            "attached": newly_attached,
+            "already_attached": already_attached,
+        }
+    )

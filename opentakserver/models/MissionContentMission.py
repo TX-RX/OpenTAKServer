@@ -13,9 +13,14 @@ class MissionContentMission(db.Model):
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     mission_content_id: Mapped[int] = mapped_column(Integer, ForeignKey("mission_content.id"))
     mission_name: Mapped[str] = mapped_column(String(255), ForeignKey("missions.name"))
+    mission_guid: Mapped[str | None] = mapped_column(String(255), nullable=True, index=True)
 
     def serialize(self):
-        return {"mission_content_id": self.mission_content_id, "mission_name": self.mission_name}
+        return {
+            "mission_content_id": self.mission_content_id,
+            "mission_name": self.mission_name,
+            "mission_guid": self.mission_guid,
+        }
 
     def to_json(self):
         return self.serialize()

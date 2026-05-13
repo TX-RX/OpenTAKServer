@@ -1902,8 +1902,11 @@ def mission_contents(mission_name: str | None = None, mission_guid: str | None =
                 mission_content_mission = MissionContentMission()
                 mission_content_mission.mission_name = mission_name
                 mission_content_mission.mission_content_id = content.id
+                mission_content_mission.mission_guid = mission.guid
 
                 db.session.add(mission_content_mission)
+            elif mission_content_mission[0].mission_guid is None:
+                mission_content_mission[0].mission_guid = mission.guid
 
             mission_change = db.session.execute(
                 db.session.query(MissionChange).filter_by(
