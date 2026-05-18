@@ -62,13 +62,33 @@ class MissionInvitation(db.Model):
         return self.serialize()
 
     def to_marti_json(self):
+        # Per TAK Server Marti spec, "invitee" is a STRING (whose meaning depends
+        # on "type") and "role" is an OBJECT with type + permissions. The prior
+        # implementation returned the EUD relationship as invitee and a single-
+        # element list as role, which trips CloudTAK/node-tak schema validation
+        # ("/data/0/invitee must be string", "/data/0/role must be object").
+        invitee_str = {
+            InvitationTypeEnum.clientUid.value: self.client_uid,
+            InvitationTypeEnum.callsign.value: self.callsign,
+            InvitationTypeEnum.userName.value: self.username,
+            InvitationTypeEnum.group.value: self.group_name,
+            InvitationTypeEnum.team.value: self.team_name,
+        }.get(self.type) or self.client_uid or self.callsign or self.username or ""
+
+        role_type = self.role or MissionRole.MISSION_SUBSCRIBER
+        role_obj = {
+            MissionRole.MISSION_OWNER: MissionRole.OWNER_ROLE,
+            MissionRole.MISSION_SUBSCRIBER: MissionRole.SUBSCRIBER_ROLE,
+            MissionRole.MISSION_READ_ONLY: MissionRole.READ_ONLY_ROLE,
+        }.get(role_type, MissionRole.SUBSCRIBER_ROLE)
+
         return {
             "missionName": self.mission_name,
-            "invitee": self.eud_uid,
-            "role": [MissionRole.MISSION_SUBSCRIBER],
+            "invitee": invitee_str,
+            "role": role_obj,
             "type": self.type,
             "creatorUid": self.creator_uid,
             "createTime": iso8601_string_from_datetime(),
             "token": "",
-            "missionGuid": self.mission.guid or self.mission_guid,
+            "missionGuid": (self.mission.guid if self.mission else None) or self.mission_guid,
         }
