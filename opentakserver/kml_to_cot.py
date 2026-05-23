@@ -104,6 +104,17 @@ def _resolve_color(placemark: ET.Element, styles: dict[str, int]) -> int:
     return DEFAULT_COLOR
 
 
+def _resolve_icon_href(placemark: ET.Element, icon_hrefs: dict[str, str]) -> Optional[str]:
+    """Find an icon URL/path for this placemark: inline IconStyle first, then styleUrl reference."""
+    inline = placemark.find(f".//{KML_NS}IconStyle/{KML_NS}Icon/{KML_NS}href")
+    if inline is not None and (inline.text or "").strip():
+        return inline.text.strip()
+    url = placemark.findtext(KML_NS + "styleUrl")
+    if url:
+        return icon_hrefs.get(url.lstrip("#"))
+    return None
+
+
 def parse_kml(kml_bytes: bytes) -> list[dict]:
     """Parse KML bytes into a list of feature dicts.
 
@@ -117,8 +128,9 @@ def parse_kml(kml_bytes: bytes) -> list[dict]:
         logger.warning("KML parse failed: %s", exc)
         return features
 
-    # Top-level Style id -> color (only LineStyle for now)
+    # Top-level Style id -> color/icon (LineStyle + IconStyle)
     styles: dict[str, int] = {}
+    icon_hrefs: dict[str, str] = {}
     for style in root.iter(KML_NS + "Style"):
         sid = style.get("id")
         if not sid:
@@ -126,6 +138,9 @@ def parse_kml(kml_bytes: bytes) -> list[dict]:
         color_el = style.find(f"./{KML_NS}LineStyle/{KML_NS}color")
         if color_el is not None and (color_el.text or "").strip():
             styles[sid] = _kml_color_to_android(color_el.text.strip())
+        href_el = style.find(f"./{KML_NS}IconStyle/{KML_NS}Icon/{KML_NS}href")
+        if href_el is not None and (href_el.text or "").strip():
+            icon_hrefs[sid] = href_el.text.strip()
 
     for placemark in root.iter(KML_NS + "Placemark"):
         name = (placemark.findtext(KML_NS + "name") or "").strip()
@@ -155,6 +170,7 @@ def parse_kml(kml_bytes: bytes) -> list[dict]:
                     "description": description,
                     "coords": coords[:1],
                     "color": color,
+                    "icon_href": _resolve_icon_href(placemark, icon_hrefs),
                 })
             continue
 
@@ -244,6 +260,12 @@ def _build_point(f: dict, source_hash: str, idx: int, time_str: str, stale: str)
     ET.SubElement(detail, "contact", {"callsign": f.get("name") or "POI"})
     if f.get("description"):
         ET.SubElement(detail, "remarks").text = f["description"]
+    icon_href = f.get("icon_href")
+    if icon_href:
+        # Carry the source KML's icon reference forward so TAK clients can
+        # render the marker style the publisher chose (e.g. Google paddle
+        # icons for numbered drop pins) instead of the default fallback.
+        ET.SubElement(detail, "usericon", {"iconsetpath": icon_href})
     ET.SubElement(detail, "archive")
     return event
 
