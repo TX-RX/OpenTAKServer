@@ -110,7 +110,12 @@ def new_atak_qr_string():
                 token = token[0]
             else:
                 token = Token()
-                token.creation = int(time.time())
+            # Always refresh creation (iat) on POST so the JWT claims hash
+            # differs from any previously-issued JWT for this user, even if
+            # exp and max are unchanged. Combined with hash_token() below,
+            # this guarantees a fresh POST invalidates every prior QR for
+            # the same user.
+            token.creation = int(time.time())
 
             expiration = int(request.json.get("exp")) if request.json.get("exp") else None
             # PyJWT uses timestamps in seconds to check expiration and not_before
