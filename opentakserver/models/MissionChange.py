@@ -61,12 +61,15 @@ class MissionChange(db.Model):
         json = {
             "isFederatedChange": self.isFederatedChange,
             "type": self.change_type,
-            "contentUid": self.content_uid,
+            # For point/UID changes content_uid is null and the affected UID
+            # lives in mission_uid. ATAK fetches /Marti/api/cot/xml/<contentUid>
+            # for each change, so contentUid must resolve to the right one.
+            "contentUid": self.content_uid or self.mission_uid,
             "missionName": self.mission_name,
             "timestamp": iso8601_string_from_datetime(self.timestamp),
             "creatorUid": self.creator_uid if self.creator_uid else "",
             "serverTime": iso8601_string_from_datetime(self.server_time),
-            "missionGuid": self.mission_uid,
+            "missionGuid": self.mission.guid if self.mission else None,
         }
 
         if self.content_resource:
