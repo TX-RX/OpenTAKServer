@@ -604,7 +604,7 @@ def put_mission(mission_name: str):
             {
                 "version": "3",
                 "type": "Mission",
-                "data": [mission.to_json()],
+                "data": [mission.to_marti_json()],
                 "nodeId": app.config.get("OTS_NODE_ID"),
             }
         )
@@ -617,7 +617,7 @@ def put_mission(mission_name: str):
         )
 
     token = generate_token(mission, mission.creator_uid)
-    mission_json = mission.to_json()
+    mission_json = mission.to_marti_json()
     mission_json["token"] = token
 
     if new_mission:
@@ -663,7 +663,7 @@ def get_mission(mission_name: str):
             {
                 "version": "3",
                 "type": "Mission",
-                "data": [mission[0].to_json()],
+                "data": [mission[0].to_marti_json()],
                 "nodeId": app.config.get("OTS_NODE_ID"),
             }
         )
@@ -1487,7 +1487,7 @@ def mission_subscribe(mission_name: str = None, mission_guid: str = None):
         response["data"] = {
             "token": token,
             "clientUid": uid,
-            "mission": mission.to_json(),
+            "mission": mission.to_marti_json(),
             "username": role.username,
             "createTime": role.createTime,
             "role": role.to_json()["role"],
@@ -2035,7 +2035,7 @@ def mission_contents(mission_name: str | None = None, mission_guid: str | None =
         {
             "version": "3",
             "type": "Mission",
-            "data": [mission.to_json()],
+            "data": [mission.to_marti_json()],
             "nodeId": app.config.get("OTS_NODE_ID"),
         }
     )
@@ -2197,7 +2197,7 @@ def delete_content(mission_name: str | None = None, mission_guid: str | None = N
         {
             "version": "3",
             "type": "Mission",
-            "data": [mission.to_json()],
+            "data": [mission.to_marti_json()],
             "nodeId": app.config.get("OTS_NODE_ID"),
         }
     )
