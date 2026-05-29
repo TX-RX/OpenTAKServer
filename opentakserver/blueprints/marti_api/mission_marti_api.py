@@ -2354,3 +2354,96 @@ def _kml_layers_for_mission(mission_name: str):
                 yield layer
         except Exception:
             logger.exception("Failed to build mission layer for KML attachment: %s", content.filename)
+
+
+# ---------------------------------------------------------------------------
+# DELETE /Marti/api/missions/.../layers — companion to the GET handler above.
+#
+# node-tak's MissionLayer.delete() (used by CloudTAK to remove a layer from
+# a mission) calls:
+#     DELETE /Marti/api/missions/guid/<guid>/layers?uid=<layer-uid>&creatorUid=...
+# Without a server handler, that call 404s and the "Delete Layer" button in
+# CloudTAK fails silently.
+#
+# Layers reported by the companion GET handler are derived on-the-fly from
+# each mission's KML attachments — there is no `mission_layers` table to
+# delete from. So "deleting a layer" here means detaching the underlying
+# KML/KMZ MissionContent from this mission, which causes both:
+#   - the GET handler to stop reporting that layer
+#   - the /cot handler (KML→CoT renderer) to stop emitting its events
+# ---------------------------------------------------------------------------
+@mission_marti_api.route("/Marti/api/missions/guid/<mission_guid>/layers", methods=["DELETE"])
+@mission_marti_api.route("/Marti/api/missions/<mission_name>/layers", methods=["DELETE"])
+def delete_mission_layers(mission_name=None, mission_guid=None):
+    # Reuse the same hashing helper the GET path uses so layer UIDs round-trip
+    # exactly. Underscore-prefixed but treated as the shared identity helper
+    # for "KML attachment <-> synthetic layer".
+    from opentakserver.kml_to_cot import _stable_uid as _kml_stable_uid
+
+    # Resolve mission_name from guid if the GUID route was hit.
+    if mission_guid and not mission_name:
+        m = db.session.execute(
+            db.session.query(Mission).filter_by(guid=mission_guid)
+        ).first()
+        if not m:
+            return jsonify({"success": False, "error": "Mission not found"}), 404
+        mission_name = m[0].name
+
+    requested_uids = set(request.args.getlist("uid"))
+    if not requested_uids:
+        return jsonify({"success": False, "error": "Missing uid parameter"}), 400
+
+    creator_uid = request.args.get("creatorUid")
+
+    # Walk this mission's KML attachments; identify which one(s) back the
+    # requested layer UIDs.
+    rows = db.session.execute(
+        db.session.query(MissionContent, MissionContentMission)
+        .join(MissionContentMission, MissionContentMission.mission_content_id == MissionContent.id)
+        .filter(MissionContentMission.mission_name == mission_name)
+    ).all()
+
+    deleted = 0
+    for content, link in rows:
+        if not _is_kml_mime(content.mime_type, content.filename):
+            continue
+        layer_uid = _kml_stable_uid("kml-layer", content.hash, content.filename or "")
+        if layer_uid not in requested_uids:
+            continue
+
+        # Detach the attachment from this mission. The MissionContent row
+        # itself stays (other missions may reference it; mission audit log
+        # remains coherent). Mirrors the long-standing pattern in
+        # delete_content() for explicit-keep semantics.
+        db.session.delete(link)
+
+        change = MissionChange()
+        change.isFederatedChange = False
+        change.change_type = MissionChange.REMOVE_CONTENT
+        change.mission_name = mission_name
+        change.timestamp = datetime.datetime.now(datetime.timezone.utc)
+        change.server_time = change.timestamp
+        change.creator_uid = creator_uid
+        db.session.add(change)
+
+        deleted += 1
+
+    if deleted == 0:
+        return (
+            jsonify({"success": False, "error": "No matching layer attachments found"}),
+            404,
+        )
+
+    db.session.commit()
+
+    mission = db.session.execute(
+        db.session.query(Mission).filter_by(name=mission_name)
+    ).first()
+    mission_data = mission[0].to_json() if mission else {}
+
+    return jsonify({
+        "version": "3",
+        "type": "Mission",
+        "data": [mission_data],
+        "nodeId": app.config.get("OTS_NODE_ID"),
+    })
