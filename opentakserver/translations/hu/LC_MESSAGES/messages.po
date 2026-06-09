@@ -8,90 +8,96 @@ msgstr ""
 "Project-Id-Version: PROJECT VERSION\n"
 "Report-Msgid-Bugs-To: EMAIL@ADDRESS\n"
 "POT-Creation-Date: 2026-06-08 21:20-0400\n"
-"PO-Revision-Date: 2026-06-08 21:20-0400\n"
-"Last-Translator: FULL NAME <EMAIL@ADDRESS>\n"
+"PO-Revision-Date: 2026-06-09 11:48+0000\n"
+"Last-Translator: Visnitz Tamás <valami@adi.hu>\n"
+"Language-Team: Hungarian <https://weblate.opentakserver.io/projects/"
+"opentakserver/opentakserver/hu/>\n"
 "Language: hu\n"
-"Language-Team: hu <LL@li.org>\n"
-"Plural-Forms: nplurals=1; plural=0;\n"
 "MIME-Version: 1.0\n"
 "Content-Type: text/plain; charset=utf-8\n"
 "Content-Transfer-Encoding: 8bit\n"
+"Plural-Forms: nplurals=1; plural=0;\n"
+"X-Generator: Weblate 5.13.3\n"
 "Generated-By: Babel 2.17.0\n"
 
 #: PasswordValidator.py:13 blueprints/ots_api/user_api.py:195
 msgid "Passwords should not include @ or : characters"
-msgstr ""
+msgstr "A jelszavak nem tartalmazhatnak @ or : characters"
 
 #: blueprints/marti_api/cot_marti_api.py:32
 #, python-format
 msgid "No CoT found for UID %(uid)s"
 msgstr ""
+"Nem található Cursor on Target (CoT) adat a megadott egyedi azonosítóhoz "
+"(UID) %(uid)s"
 
 #: blueprints/marti_api/cot_marti_api.py:57
 #, python-format
 msgid "Invalid secago value: %(sec_ago)s"
-msgstr ""
+msgstr "Érvénytelen idő érték: %(sec_ago)s"
 
 #: blueprints/marti_api/data_package_marti_api.py:92
 msgid "This data package has already been uploaded"
-msgstr ""
+msgstr "Ez az adatcsomag már fel van töltve"
 
 #: blueprints/marti_api/data_package_marti_api.py:181
 msgid "A file is required"
-msgstr ""
+msgstr "Egy fájl megadása szükséges"
 
 #: blueprints/marti_api/data_package_marti_api.py:201
 #, python-format
 msgid "Invalid file extension: %(extension)s"
-msgstr ""
+msgstr "Érvénytelen fájlkiterjesztés (%(extension)s)"
 
 #: blueprints/marti_api/data_package_marti_api.py:385
 #, python-format
 msgid "File not found: %(filename)s}"
-msgstr ""
+msgstr "%(filename)s Fájl nem található"
 
 #: blueprints/marti_api/group_marti_api.py:40
 msgid "Groups are only supported on SSL connections"
-msgstr ""
+msgstr "A csoportok kizárólag SSL-kapcsolattal támogatottak (%(fájlnév)s)"
 
 #: blueprints/marti_api/group_marti_api.py:109
 #: blueprints/marti_api/group_marti_api.py:167
 msgid "Please specify a groupNameFilter"
-msgstr ""
+msgstr "Kérjük, adjon meg egy csoportnév-szűrőt"
 
 #: blueprints/marti_api/group_marti_api.py:121
 #: blueprints/marti_api/group_marti_api.py:179
 #, python-format
 msgid "Please specify a groupNameFilter that starts with %(prefix)s"
-msgstr ""
+msgstr "Kérjük, adjon meg egy %(prefix)s előtaggal kezdődő Csoportnév szűrőt"
 
 #: blueprints/marti_api/group_marti_api.py:134
 #: blueprints/marti_api/group_marti_api.py:192
 msgid "groupNameFilter must end with either _READ or _WRITE"
 msgstr ""
+"A Csoportnév szűrő karakterláncnak _READ vagy _WRITE karakterlánccal kell "
+"végződnie"
 
 #: blueprints/marti_api/group_marti_api.py:294
 #: blueprints/ots_api/group_api.py:365 blueprints/ots_api/user_api.py:587
 msgid "Direction must be IN or OUT"
-msgstr ""
+msgstr "Az iránynak BE vagy KI-nek kell lennie"
 
 #: blueprints/marti_api/group_marti_api.py:303
 msgid "The active attribute must be true or false"
-msgstr ""
+msgstr "Az active attribútumnak igaznak vagy hamisnak kell lennie"
 
 #: blueprints/marti_api/group_marti_api.py:312
 msgid "Group name is required"
-msgstr ""
+msgstr "Csoportnév megadása kötelező"
 
 #: blueprints/marti_api/group_marti_api.py:355
 #, python-format
 msgid "%(username)s is not in the %(group_name)s group"
-msgstr ""
+msgstr "%(username)s nincs a(z) %(group_name)s csoportban"
 
 #: blueprints/marti_api/group_marti_api.py:377
 #, python-format
 msgid "Failed to update group subscriptions for %(username)s: %(e)s"
-msgstr ""
+msgstr "Nem sikerült frissíteni a(z) %(username)s csoporttagságait: %(e)s"
 
 #: blueprints/marti_api/group_marti_api.py:406
 msgid "Please provide a group name and direction"
@@ -725,4 +731,3 @@ msgstr ""
 #: eud_handler/eud_handler.py:34
 msgid "UDP Server"
 msgstr ""
-
