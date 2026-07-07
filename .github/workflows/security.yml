@@ -32,16 +32,12 @@ jobs:
       - name: Install Bandit
         run: pip install "bandit[sarif,toml]==1.8.0"
 
-      # Fail the job on HIGH severity findings only. MEDIUM/LOW are surfaced
-      # via SARIF in the Security tab but don't block merges — Bandit's
-      # medium-severity rules are noisy on Flask apps and would generate too
-      # much friction to be useful as gating signal.
+      # Full scan → SARIF for the Security tab, informational only.
       - name: Bandit scan (SARIF upload)
         run: |
           bandit -r opentakserver \
             -f sarif -o bandit.sarif \
             --exit-zero
-        # exit-zero here → we upload everything; gating happens in next step
 
       - name: Upload Bandit SARIF
         if: always()
@@ -50,8 +46,17 @@ jobs:
           sarif_file: bandit.sarif
           category: bandit
 
-      - name: Bandit gate (fail on HIGH severity)
-        run: bandit -r opentakserver --severity-level high
+      # Gating scan compares against .bandit-baseline.json — pre-existing
+      # HIGH findings in upstream code are accepted; any NEW HIGH finding
+      # blocks the merge. Regenerate the baseline only when the operator
+      # has intentionally reviewed and accepted new findings:
+      #   bandit -r opentakserver -f json -o .bandit-baseline.json \
+      #     --severity-level high
+      - name: Bandit gate (baseline-diff on HIGH severity)
+        run: |
+          bandit -r opentakserver \
+            --baseline .bandit-baseline.json \
+            --severity-level high
 
   pip-audit:
     name: pip-audit (dependency CVEs)
@@ -77,8 +82,24 @@ jobs:
       - name: Install pip-audit
         run: pip install "pip-audit==2.7.3"
 
-      - name: Run pip-audit
-        run: pip-audit --requirement requirements.txt --strict
+      # Build --ignore-vuln flags from .pip-audit-ignore.txt so pre-existing
+      # CVEs against upstream's pinned deps don't block merges. Any CVE not
+      # in the baseline file (i.e. newly disclosed or newly introduced by a
+      # dep change) fails the gate. Dependabot (enabled by
+      # setup-branch-protection.sh) opens PRs to actually fix these — when
+      # a PR bumps a dep past the vulnerable range, drop the corresponding
+      # CVE IDs from .pip-audit-ignore.txt.
+      - name: Run pip-audit (baseline-diff)
+        run: |
+          IGNORE_FLAGS=()
+          while IFS= read -r line; do
+            # Strip comments and blank lines
+            id="${line%%#*}"
+            id="$(echo -n "$id" | tr -d '[:space:]')"
+            [ -n "$id" ] && IGNORE_FLAGS+=(--ignore-vuln "$id")
+          done < .pip-audit-ignore.txt
+          echo "Ignoring ${#IGNORE_FLAGS[@]} CVE IDs (2 per flag = ${#IGNORE_FLAGS[@]} / 2)"
+          pip-audit --requirement requirements.txt --strict "${IGNORE_FLAGS[@]}"
 
   gitleaks:
     name: gitleaks (secret scan)

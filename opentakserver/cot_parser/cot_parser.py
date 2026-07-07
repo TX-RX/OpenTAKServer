@@ -1,6 +1,5 @@
 import base64
 import datetime
-from datetime import timedelta, timezone
 import logging
 import os
 import platform
@@ -9,6 +8,7 @@ import sys
 import time
 import traceback
 import uuid
+from datetime import timedelta, timezone
 from logging.handlers import TimedRotatingFileHandler
 
 import bleach
@@ -24,7 +24,6 @@ from flask_security import SQLAlchemyUserDatastore
 from flask_security.models import fsqla
 from flask_socketio import SocketIO
 from meshtastic import BROADCAST_NUM, mesh_pb2, mqtt_pb2, portnums_pb2
-from opentakserver.models.GroupUser import GroupUser
 from pika.channel import Channel
 from sqlalchemy import exc, insert, select, update
 
@@ -45,6 +44,7 @@ from opentakserver.models.EUDStats import EUDStats
 from opentakserver.models.GeoChat import GeoChat
 from opentakserver.models.Group import Group
 from opentakserver.models.GroupMission import GroupMission
+from opentakserver.models.GroupUser import GroupUser
 from opentakserver.models.Icon import Icon
 from opentakserver.models.Marker import Marker
 from opentakserver.models.Meshtastic import MeshtasticChannel

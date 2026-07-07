@@ -52,9 +52,23 @@ Every PR into `main` must pass:
 
 - **CI** — black/isort/flake8/pytest (`.github/workflows/ci.yml`)
 - **CodeQL** — Python SAST via GitHub's security-extended query pack (`.github/workflows/codeql.yml`)
-- **Bandit** — Python SAST, fails on HIGH severity (`.github/workflows/security.yml`)
-- **pip-audit** — dependency CVE scan against `poetry.lock` (`.github/workflows/security.yml`)
+- **Bandit** — Python SAST, HIGH severity, baseline-diff against `.bandit-baseline.json` (`.github/workflows/security.yml`)
+- **pip-audit** — dependency CVE scan against `poetry.lock`, baseline-diff against `.pip-audit-ignore.txt` (`.github/workflows/security.yml`)
 - **gitleaks** — secret pattern scan across the PR range (`.github/workflows/security.yml`)
+
+### Baseline files
+
+Bandit and pip-audit both run in baseline-diff mode. Pre-existing findings against upstream code
+and pinned dependencies are recorded as accepted; any NEW finding blocks merge.
+
+- **`.bandit-baseline.json`** — snapshot of current HIGH-severity Bandit findings. Regenerate only
+  when the operator has intentionally accepted a new HIGH finding:
+  ```bash
+  poetry run bandit -r opentakserver -f json -o .bandit-baseline.json --severity-level high
+  ```
+- **`.pip-audit-ignore.txt`** — one CVE ID per line (comments with `#` allowed). When a Dependabot
+  PR upgrades a dep past the vulnerable range, drop the corresponding CVE IDs from this file so
+  the gate stays real.
 
 Repo-level controls layered on top:
 

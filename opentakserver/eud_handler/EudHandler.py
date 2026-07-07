@@ -11,9 +11,9 @@ import sys
 import traceback
 import uuid
 from logging.handlers import TimedRotatingFileHandler
-from socket import socket, SHUT_RDWR
+from socket import SHUT_RDWR, socket
 from threading import Thread
-from xml.etree.ElementTree import Element, SubElement, tostring, fromstring, ParseError
+from xml.etree.ElementTree import Element, ParseError, SubElement, fromstring, tostring
 
 import bleach
 import colorlog
@@ -24,16 +24,16 @@ import yaml
 from bs4 import BeautifulSoup
 from flask import Flask
 from flask_ldap3_login import AuthenticationResponseStatus
-from flask_security import SQLAlchemyUserDatastore, Security, verify_password
+from flask_security import Security, SQLAlchemyUserDatastore, verify_password
 from flask_security.models import fsqla
 from pika.channel import Channel
-from sqlalchemy import insert, update, select
+from sqlalchemy import insert, select, update
 
-from opentakserver.EmailValidator import EmailValidator
-from opentakserver.PasswordValidator import PasswordValidator
 from opentakserver.defaultconfig import DefaultConfig
-from opentakserver.extensions import logger as ots_logger, db, ldap_manager
-from opentakserver.functions import iso8601_string_from_datetime, datetime_from_iso8601_string
+from opentakserver.EmailValidator import EmailValidator
+from opentakserver.extensions import db, ldap_manager
+from opentakserver.extensions import logger as ots_logger
+from opentakserver.functions import datetime_from_iso8601_string, iso8601_string_from_datetime
 
 # These unused imports are required by SQLAlchemy, don't remove them
 from opentakserver.models.Alert import Alert
@@ -63,6 +63,7 @@ from opentakserver.models.VideoRecording import VideoRecording
 from opentakserver.models.VideoStream import VideoStream
 from opentakserver.models.WebAuthn import WebAuthn
 from opentakserver.models.ZMIST import ZMIST
+from opentakserver.PasswordValidator import PasswordValidator
 
 
 class EudHandler(socketserver.BaseRequestHandler):

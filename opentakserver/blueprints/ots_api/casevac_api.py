@@ -6,7 +6,6 @@ import sqlalchemy.exc
 from flask import Blueprint, jsonify, request
 from flask_babel import gettext
 from flask_security import auth_required, current_user
-from opentakserver.models.GroupUser import GroupUser
 from sqlalchemy import insert, update
 from werkzeug.datastructures import ImmutableMultiDict
 
@@ -19,6 +18,7 @@ from opentakserver.models.CasEvac import CasEvac
 from opentakserver.models.CoT import CoT
 from opentakserver.models.EUD import EUD
 from opentakserver.models.Group import Group
+from opentakserver.models.GroupUser import GroupUser
 from opentakserver.models.Point import Point
 from opentakserver.models.ZMIST import ZMIST
 

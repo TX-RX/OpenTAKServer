@@ -11,18 +11,18 @@ import yaml
 from apscheduler.jobstores import sqlalchemy
 from flask import Flask, jsonify
 from flask_babel import gettext
-from flask_security import SQLAlchemyUserDatastore, Security
+from flask_security import Security, SQLAlchemyUserDatastore
 from flask_security.models import fsqla
 
-from opentakserver.EmailValidator import EmailValidator
-from opentakserver.PasswordValidator import PasswordValidator
 from opentakserver.defaultconfig import DefaultConfig
+from opentakserver.EmailValidator import EmailValidator
 from opentakserver.eud_handler import EudHandler
 from opentakserver.eud_handler.EudHandlerSSL import EudHandlerSSL
 from opentakserver.eud_handler.EudServer import EudServer
 from opentakserver.eud_handler.EudServerSSL import EudServerSSL
 from opentakserver.eud_handler.EudServerUdp import EudServerUdp
-from opentakserver.extensions import logger, db, ldap_manager
+from opentakserver.extensions import db, ldap_manager, logger
+from opentakserver.PasswordValidator import PasswordValidator
 
 
 def args():
