@@ -62,6 +62,11 @@ Repo-level controls layered on top:
   known secret pattern is detected, before the code lands on the remote.
 - **Dependabot vulnerability alerts** — surfaces new CVEs against pinned deps.
 - **Dependabot automated security fixes** — opens PRs to upgrade vulnerable deps.
+- **Squash-only merge policy** — every PR collapses to a single commit on
+  `main`. Preserves linear history (required by branch protection) and keeps
+  the downstream patch inventory in `FORK.md` easy to line up against
+  actual commits. Merge commits and rebase merges are disabled at the repo
+  level. Merged PR branches are auto-deleted.
 
 All the above are configured by `.github/setup-branch-protection.sh`. Run it after any change
 to the required-check names.
