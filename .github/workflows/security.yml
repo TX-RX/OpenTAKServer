@@ -1,0 +1,147 @@
+name: Security
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+    branches: [main]
+  schedule:
+    # Weekly re-scan catches new CVE disclosures against unchanged deps.
+    - cron: "37 5 * * 1"
+  workflow_dispatch:
+
+concurrency:
+  group: security-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  bandit:
+    name: Bandit (Python SAST)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: Install Bandit
+        run: pip install "bandit[sarif,toml]==1.8.0"
+
+      # Full scan → SARIF for the Security tab, informational only.
+      - name: Bandit scan (SARIF upload)
+        run: |
+          bandit -r opentakserver \
+            -f sarif -o bandit.sarif \
+            --exit-zero
+
+      - name: Upload Bandit SARIF
+        if: always()
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: bandit.sarif
+          category: bandit
+
+      # Gating scan compares against .bandit-baseline.json — pre-existing
+      # HIGH findings in upstream code are accepted; any NEW HIGH finding
+      # blocks the merge. Regenerate the baseline only when the operator
+      # has intentionally reviewed and accepted new findings:
+      #   bandit -r opentakserver -f json -o .bandit-baseline.json \
+      #     --severity-level high
+      - name: Bandit gate (baseline-diff on HIGH severity)
+        run: |
+          bandit -r opentakserver \
+            --baseline .bandit-baseline.json \
+            --severity-level high
+
+  pip-audit:
+    name: pip-audit (dependency CVEs)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: Install Poetry
+        uses: snok/install-poetry@v1
+        with:
+          version: "2.2.1"
+
+      - name: Export requirements from poetry.lock
+        run: |
+          poetry self add poetry-plugin-export
+          poetry export --without-hashes --format requirements.txt --output requirements.txt
+
+      - name: Install pip-audit
+        run: pip install "pip-audit==2.7.3"
+
+      # Smart gating:
+      # - On a PR that changes poetry.lock (i.e. actually touches the
+      #   dep tree), pip-audit runs STRICTLY. Any CVE not in
+      #   .pip-audit-ignore.txt fails the merge. This is the real
+      #   guard against introducing vulnerable deps.
+      # - On any other trigger (PRs that don't touch deps, pushes,
+      #   scheduled runs), pip-audit runs INFORMATIONALLY. Findings
+      #   are visible in the log but do not fail the job — background
+      #   CVE disclosures against unchanged pinned versions would
+      #   otherwise force every unrelated PR to bump the ignore list.
+      #   Dependabot (enabled by setup-branch-protection.sh) opens PRs
+      #   to actually fix those; the weekly cron run keeps the CVE
+      #   report fresh.
+      - name: Detect poetry.lock changes
+        id: lockchange
+        run: |
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            if git diff --name-only "origin/${{ github.base_ref }}...HEAD" | grep -qx 'poetry.lock'; then
+              echo "changed=true" >> $GITHUB_OUTPUT
+              echo "poetry.lock changed in this PR — pip-audit will run in strict mode"
+            else
+              echo "changed=false" >> $GITHUB_OUTPUT
+              echo "poetry.lock unchanged — pip-audit will run informationally"
+            fi
+          else
+            echo "changed=false" >> $GITHUB_OUTPUT
+            echo "Non-PR trigger — pip-audit will run informationally"
+          fi
+
+      - name: Run pip-audit
+        run: |
+          IGNORE_FLAGS=()
+          while IFS= read -r line; do
+            id="${line%%#*}"
+            id="$(echo -n "$id" | tr -d '[:space:]')"
+            [ -n "$id" ] && IGNORE_FLAGS+=(--ignore-vuln "$id")
+          done < .pip-audit-ignore.txt
+          echo "Ignoring $((${#IGNORE_FLAGS[@]} / 2)) CVE IDs from .pip-audit-ignore.txt"
+          if [ "${{ steps.lockchange.outputs.changed }}" = "true" ]; then
+            pip-audit --requirement requirements.txt --strict "${IGNORE_FLAGS[@]}"
+          else
+            pip-audit --requirement requirements.txt "${IGNORE_FLAGS[@]}" || {
+              echo "::warning::pip-audit found vulnerabilities in unchanged deps — informational only. Dependabot will open PRs to fix; regenerate baseline as those land."
+              exit 0
+            }
+          fi
+
+  gitleaks:
+    name: gitleaks (secret scan)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          # Full history so gitleaks can inspect the whole PR range.
+          fetch-depth: 0
+
+      - name: Run gitleaks
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITLEAKS_ENABLE_UPLOAD_ARTIFACT: true

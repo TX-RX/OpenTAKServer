@@ -114,7 +114,9 @@ def generate_mission_change_cot(
     )
 
     if not mission:
-        mission = db.session.execute(db.session.query(Mission).filter_by(name=mission_name)).scalar()
+        mission = db.session.execute(
+            db.session.query(Mission).filter_by(name=mission_name)
+        ).scalar()
 
     detail = SubElement(event, "detail")
     mission_element = SubElement(

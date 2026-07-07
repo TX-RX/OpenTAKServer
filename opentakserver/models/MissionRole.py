@@ -46,7 +46,9 @@ class MissionRole(db.Model):
     username: Mapped[str] = mapped_column(String(255))
     createTime: Mapped[datetime] = mapped_column(DateTime)
     role_type: Mapped[str] = mapped_column(String(255))
-    mission_name: Mapped[str] = mapped_column(String(255), ForeignKey("missions.name"), nullable=True)
+    mission_name: Mapped[str] = mapped_column(
+        String(255), ForeignKey("missions.name"), nullable=True
+    )
     mission_guid: Mapped[str] = mapped_column(String(255), nullable=True)
     mission = relationship("Mission", back_populates="roles", uselist=False)
 

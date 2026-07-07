@@ -25,10 +25,7 @@ class DeviceProfiles(db.Model):
     active: Mapped[bool] = mapped_column(Boolean, default=True)
     publish_time: Mapped[datetime] = mapped_column(DateTime)
     eud_uid: Mapped[str] = mapped_column(
-        String(255),
-        ForeignKey("euds.uid", ondelete="CASCADE"),
-        nullable=True,
-        default=None
+        String(255), ForeignKey("euds.uid", ondelete="CASCADE"), nullable=True, default=None
     )
     eud = relationship("EUD", back_populates="profiles")
 
