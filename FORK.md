@@ -50,11 +50,22 @@ delete the row and the patch drops out of `main` on the next rebase.
 
 Every PR into `main` must pass:
 
-- **CI** — black/isort/flake8/pytest (`.github/workflows/ci.yml`)
+- **CI** — black/isort/flake8, wheel build, pytest (`.github/workflows/ci.yml`)
 - **CodeQL** — Python SAST via GitHub's security-extended query pack (`.github/workflows/codeql.yml`)
 - **Bandit** — Python SAST, HIGH severity, baseline-diff against `.bandit-baseline.json` (`.github/workflows/security.yml`)
 - **pip-audit** — dependency CVE scan against `poetry.lock`. On PRs that change `poetry.lock`, runs strictly against `.pip-audit-ignore.txt`. On PRs that don't touch deps, runs informationally so unrelated changes don't get blocked by background CVE churn against unchanged pinned versions (`.github/workflows/security.yml`)
 - **gitleaks** — secret pattern scan across the PR range (`.github/workflows/security.yml`)
+
+### Test suite state
+
+Upstream's `tests/tests.py` currently fails against upstream `master` with a Flask-SQLAlchemy
+fixture error (`"The current Flask app is not registered with this 'SQLAlchemy' instance"`).
+Upstream has no CI running these tests so the breakage is invisible to them. The CI job runs
+tests informationally — it emits a workflow warning if pytest fails but does not block merges.
+The `Build wheel` job (`poetry build`) is the actual required build gate.
+
+Fixing the fixture would require modifying `tests/conftest.py`, guaranteeing a merge conflict on
+every upstream sync. Owed follow-up: propose a conftest fix upstream so the divergence resolves.
 
 ### Baseline files
 

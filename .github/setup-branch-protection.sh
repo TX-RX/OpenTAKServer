@@ -82,6 +82,7 @@ echo "[5/5] Applying branch protection to $REPO:$BRANCH..."
 # job names change in ci.yml / codeql.yml / security.yml.
 REQUIRED_CHECKS='[
   "lint",
+  "Build wheel",
   "test (3.11)",
   "test (3.12)",
   "Analyze (python)",
