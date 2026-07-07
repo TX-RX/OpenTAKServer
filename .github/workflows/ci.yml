@@ -130,8 +130,12 @@ jobs:
       - name: Install project
         run: poetry install --with dev --no-interaction
 
+      # Upstream test file is `tests/tests.py` which does not match pytest's
+      # default python_files pattern (test_*.py). Override so the file is
+      # discovered without modifying pyproject.toml (which we deliberately
+      # avoid touching to keep upstream syncs fast-forward).
       - name: pytest
-        run: poetry run pytest
+        run: poetry run pytest --override-ini="python_files=test_*.py tests.py"
 
       - name: Upload coverage artifact
         if: always()

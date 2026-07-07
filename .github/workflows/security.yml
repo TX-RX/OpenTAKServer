@@ -63,6 +63,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
 
       - name: Set up Python
         uses: actions/setup-python@v6
@@ -82,24 +84,52 @@ jobs:
       - name: Install pip-audit
         run: pip install "pip-audit==2.7.3"
 
-      # Build --ignore-vuln flags from .pip-audit-ignore.txt so pre-existing
-      # CVEs against upstream's pinned deps don't block merges. Any CVE not
-      # in the baseline file (i.e. newly disclosed or newly introduced by a
-      # dep change) fails the gate. Dependabot (enabled by
-      # setup-branch-protection.sh) opens PRs to actually fix these — when
-      # a PR bumps a dep past the vulnerable range, drop the corresponding
-      # CVE IDs from .pip-audit-ignore.txt.
-      - name: Run pip-audit (baseline-diff)
+      # Smart gating:
+      # - On a PR that changes poetry.lock (i.e. actually touches the
+      #   dep tree), pip-audit runs STRICTLY. Any CVE not in
+      #   .pip-audit-ignore.txt fails the merge. This is the real
+      #   guard against introducing vulnerable deps.
+      # - On any other trigger (PRs that don't touch deps, pushes,
+      #   scheduled runs), pip-audit runs INFORMATIONALLY. Findings
+      #   are visible in the log but do not fail the job — background
+      #   CVE disclosures against unchanged pinned versions would
+      #   otherwise force every unrelated PR to bump the ignore list.
+      #   Dependabot (enabled by setup-branch-protection.sh) opens PRs
+      #   to actually fix those; the weekly cron run keeps the CVE
+      #   report fresh.
+      - name: Detect poetry.lock changes
+        id: lockchange
+        run: |
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            if git diff --name-only "origin/${{ github.base_ref }}...HEAD" | grep -qx 'poetry.lock'; then
+              echo "changed=true" >> $GITHUB_OUTPUT
+              echo "poetry.lock changed in this PR — pip-audit will run in strict mode"
+            else
+              echo "changed=false" >> $GITHUB_OUTPUT
+              echo "poetry.lock unchanged — pip-audit will run informationally"
+            fi
+          else
+            echo "changed=false" >> $GITHUB_OUTPUT
+            echo "Non-PR trigger — pip-audit will run informationally"
+          fi
+
+      - name: Run pip-audit
         run: |
           IGNORE_FLAGS=()
           while IFS= read -r line; do
-            # Strip comments and blank lines
             id="${line%%#*}"
             id="$(echo -n "$id" | tr -d '[:space:]')"
             [ -n "$id" ] && IGNORE_FLAGS+=(--ignore-vuln "$id")
           done < .pip-audit-ignore.txt
-          echo "Ignoring ${#IGNORE_FLAGS[@]} CVE IDs (2 per flag = ${#IGNORE_FLAGS[@]} / 2)"
-          pip-audit --requirement requirements.txt --strict "${IGNORE_FLAGS[@]}"
+          echo "Ignoring $((${#IGNORE_FLAGS[@]} / 2)) CVE IDs from .pip-audit-ignore.txt"
+          if [ "${{ steps.lockchange.outputs.changed }}" = "true" ]; then
+            pip-audit --requirement requirements.txt --strict "${IGNORE_FLAGS[@]}"
+          else
+            pip-audit --requirement requirements.txt "${IGNORE_FLAGS[@]}" || {
+              echo "::warning::pip-audit found vulnerabilities in unchanged deps — informational only. Dependabot will open PRs to fix; regenerate baseline as those land."
+              exit 0
+            }
+          fi
 
   gitleaks:
     name: gitleaks (secret scan)

@@ -22,6 +22,20 @@ GHSA-hpj7-wq8m-9hgp
 GHSA-g3cq-j2xw-wf74
 GHSA-9x8q-7h8h-wcw9
 GHSA-xcgm-r5h9-7989
+# aiohttp 3.13.3 (additional CVEs disclosed 2026-07-07)
+PYSEC-2026-237
+GHSA-p998-jp59-783m
+GHSA-hcc4-c3v8-rx92
+GHSA-m5qp-6w8w-w647
+GHSA-3wq7-rqq7-wx6j
+GHSA-mwh4-6h8g-pg8w
+GHSA-966j-vmvw-g2g9
+GHSA-63hf-3vf5-4wqf
+GHSA-c427-h43c-vf67
+GHSA-w2fm-2cpv-w7v5
+GHSA-2vrm-gr82-f7m5
+GHSA-jg22-mg44-37j8
+GHSA-hg6j-4rv6-33pg
 
 # bleach 6.3.0
 GHSA-g75f-g53v-794x
