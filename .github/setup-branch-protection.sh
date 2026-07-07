@@ -23,6 +23,12 @@
 
 set -euo pipefail
 
+# gh api endpoints are written WITHOUT the leading slash. On Windows
+# (Git Bash / MINGW), a leading slash triggers MSYS path conversion
+# which mangles /repos/OWNER/REPO into C:/Program Files/Git/repos/OWNER/REPO
+# before gh sees it. Leading-slash-less endpoints work identically on
+# Linux and macOS.
+
 REPO="${REPO:-TX-RX/OpenTAKServer}"
 BRANCH="${BRANCH:-main}"
 
@@ -35,12 +41,12 @@ echo
 
 echo "[1/5] Enabling Dependabot vulnerability alerts..."
 gh api --method PUT -H "Accept: application/vnd.github+json" \
-  "/repos/$REPO/vulnerability-alerts" >/dev/null
+  "repos/$REPO/vulnerability-alerts" >/dev/null
 echo "      ok"
 
 echo "[2/5] Enabling Dependabot automated security fixes..."
 gh api --method PUT -H "Accept: application/vnd.github+json" \
-  "/repos/$REPO/automated-security-fixes" >/dev/null
+  "repos/$REPO/automated-security-fixes" >/dev/null
 echo "      ok"
 
 echo "[3/5] Enabling secret scanning + push protection..."
@@ -48,7 +54,7 @@ echo "[3/5] Enabling secret scanning + push protection..."
 # time, before the code lands on the remote. Requires the fork to be public
 # (it is) or have GitHub Advanced Security (not needed for public repos).
 gh api --method PATCH -H "Accept: application/vnd.github+json" \
-  "/repos/$REPO" \
+  "repos/$REPO" \
   -F 'security_and_analysis[secret_scanning][status]=enabled' \
   -F 'security_and_analysis[secret_scanning_push_protection][status]=enabled' \
   >/dev/null
@@ -61,7 +67,7 @@ echo "      ok"
 
 echo "[4/5] Setting squash-only merge policy..."
 gh api --method PATCH -H "Accept: application/vnd.github+json" \
-  "/repos/$REPO" \
+  "repos/$REPO" \
   -F allow_squash_merge=true \
   -F allow_merge_commit=false \
   -F allow_rebase_merge=false \
@@ -94,7 +100,7 @@ REQUIRED_CHECKS='[
 gh api \
   --method PUT \
   -H "Accept: application/vnd.github+json" \
-  "/repos/$REPO/branches/$BRANCH/protection" \
+  "repos/$REPO/branches/$BRANCH/protection" \
   --input - <<EOF
 {
   "required_status_checks": {
