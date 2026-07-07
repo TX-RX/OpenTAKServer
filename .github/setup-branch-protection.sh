@@ -1,13 +1,24 @@
 #!/usr/bin/env bash
-# Apply branch protection to the fork's `main` branch.
-# Idempotent — safe to re-run to reconcile state after manual UI changes.
+# Establish `main` as the protected collaboration branch on the fork.
+#
+# Applies:
+#   1) Repo-level security controls: Dependabot alerts, automated security
+#      fixes, secret scanning + push protection.
+#   2) Branch protection on `main`: linear history, required PR review by a
+#      CODEOWNER, required status checks (CI + security), no force push,
+#      no deletion, resolved conversations.
+#
+# Idempotent — safe to re-run to reconcile state after any manual UI changes.
 #
 # Prereqs:
 #   - gh CLI authenticated as an admin on TX-RX/OpenTAKServer
 #   - `main` branch already exists on the fork
+#   - CI, CodeQL, and Security workflows have each run at least once on `main`
+#     (GitHub only lets you require a status check as a merge gate after it
+#     has been reported by a workflow run).
 #
 # Usage:
-#   bash .github/setup-branch-protection.sh                # applies to TX-RX/OpenTAKServer:main
+#   bash .github/setup-branch-protection.sh
 #   REPO=TX-RX/OpenTAKServer BRANCH=main bash .github/setup-branch-protection.sh
 
 set -euo pipefail
@@ -15,10 +26,52 @@ set -euo pipefail
 REPO="${REPO:-TX-RX/OpenTAKServer}"
 BRANCH="${BRANCH:-main}"
 
-echo "Applying branch protection to $REPO:$BRANCH"
+echo "== $REPO =="
+echo
 
-# CI job names that must pass. Update these if the ci.yml job matrix changes.
-REQUIRED_CHECKS='["lint","test (3.11)","test (3.12)"]'
+# ----------------------------------------------------------------------------
+# Repo-level security controls
+# ----------------------------------------------------------------------------
+
+echo "[1/4] Enabling Dependabot vulnerability alerts..."
+gh api --method PUT -H "Accept: application/vnd.github+json" \
+  "/repos/$REPO/vulnerability-alerts" >/dev/null
+echo "      ok"
+
+echo "[2/4] Enabling Dependabot automated security fixes..."
+gh api --method PUT -H "Accept: application/vnd.github+json" \
+  "/repos/$REPO/automated-security-fixes" >/dev/null
+echo "      ok"
+
+echo "[3/4] Enabling secret scanning + push protection..."
+# Push protection blocks commits containing known secret patterns at git-push
+# time, before the code lands on the remote. Requires the fork to be public
+# (it is) or have GitHub Advanced Security (not needed for public repos).
+gh api --method PATCH -H "Accept: application/vnd.github+json" \
+  "/repos/$REPO" \
+  -F 'security_and_analysis[secret_scanning][status]=enabled' \
+  -F 'security_and_analysis[secret_scanning_push_protection][status]=enabled' \
+  >/dev/null
+echo "      ok"
+
+# ----------------------------------------------------------------------------
+# Branch protection on `main`
+# ----------------------------------------------------------------------------
+
+echo "[4/4] Applying branch protection to $REPO:$BRANCH..."
+
+# Required check names. These MUST match the workflow job "name:" (or the
+# job-id if no name is set) as GitHub reports them. Update this list if
+# job names change in ci.yml / codeql.yml / security.yml.
+REQUIRED_CHECKS='[
+  "lint",
+  "test (3.11)",
+  "test (3.12)",
+  "Analyze (python)",
+  "Bandit (Python SAST)",
+  "pip-audit (dependency CVEs)",
+  "gitleaks (secret scan)"
+]'
 
 gh api \
   --method PUT \
@@ -43,5 +96,9 @@ gh api \
   "required_conversation_resolution": true
 }
 EOF
+echo "      ok"
 
-echo "Done. Verify at: https://github.com/$REPO/settings/branches"
+echo
+echo "Done."
+echo "  Branch protection:   https://github.com/$REPO/settings/branches"
+echo "  Security & analysis: https://github.com/$REPO/settings/security_analysis"

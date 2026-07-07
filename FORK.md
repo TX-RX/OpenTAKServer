@@ -46,6 +46,26 @@ delete the row and the patch drops out of `main` on the next rebase.
 | ------------------------------------ | ----------------------------------------------------- | --------------- |
 | `fix/qr-token-security`              | Enforce single-use enrollment QR by default           | Declined (PR #311) — upstream considers unlimited-use intentional |
 
+## Security gating
+
+Every PR into `main` must pass:
+
+- **CI** — black/isort/flake8/pytest (`.github/workflows/ci.yml`)
+- **CodeQL** — Python SAST via GitHub's security-extended query pack (`.github/workflows/codeql.yml`)
+- **Bandit** — Python SAST, fails on HIGH severity (`.github/workflows/security.yml`)
+- **pip-audit** — dependency CVE scan against `poetry.lock` (`.github/workflows/security.yml`)
+- **gitleaks** — secret pattern scan across the PR range (`.github/workflows/security.yml`)
+
+Repo-level controls layered on top:
+
+- **Secret scanning + push protection** — GitHub blocks the push itself if a
+  known secret pattern is detected, before the code lands on the remote.
+- **Dependabot vulnerability alerts** — surfaces new CVEs against pinned deps.
+- **Dependabot automated security fixes** — opens PRs to upgrade vulnerable deps.
+
+All the above are configured by `.github/setup-branch-protection.sh`. Run it after any change
+to the required-check names.
+
 ## Deploy verification
 
 Per project convention, non-trivial patches are verified on the Azure OTS install before merging to

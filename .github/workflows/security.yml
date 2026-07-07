@@ -1,0 +1,96 @@
+name: Security
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+    branches: [main]
+  schedule:
+    # Weekly re-scan catches new CVE disclosures against unchanged deps.
+    - cron: "37 5 * * 1"
+  workflow_dispatch:
+
+concurrency:
+  group: security-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  bandit:
+    name: Bandit (Python SAST)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: Install Bandit
+        run: pip install "bandit[sarif,toml]==1.8.0"
+
+      # Fail the job on HIGH severity findings only. MEDIUM/LOW are surfaced
+      # via SARIF in the Security tab but don't block merges — Bandit's
+      # medium-severity rules are noisy on Flask apps and would generate too
+      # much friction to be useful as gating signal.
+      - name: Bandit scan (SARIF upload)
+        run: |
+          bandit -r opentakserver \
+            -f sarif -o bandit.sarif \
+            --exit-zero
+        # exit-zero here → we upload everything; gating happens in next step
+
+      - name: Upload Bandit SARIF
+        if: always()
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: bandit.sarif
+          category: bandit
+
+      - name: Bandit gate (fail on HIGH severity)
+        run: bandit -r opentakserver --severity-level high
+
+  pip-audit:
+    name: pip-audit (dependency CVEs)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: Install Poetry
+        uses: snok/install-poetry@v1
+        with:
+          version: "2.2.1"
+
+      - name: Export requirements from poetry.lock
+        run: |
+          poetry self add poetry-plugin-export
+          poetry export --without-hashes --format requirements.txt --output requirements.txt
+
+      - name: Install pip-audit
+        run: pip install "pip-audit==2.7.3"
+
+      - name: Run pip-audit
+        run: pip-audit --requirement requirements.txt --strict
+
+  gitleaks:
+    name: gitleaks (secret scan)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          # Full history so gitleaks can inspect the whole PR range.
+          fetch-depth: 0
+
+      - name: Run gitleaks
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITLEAKS_ENABLE_UPLOAD_ARTIFACT: true
