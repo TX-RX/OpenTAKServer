@@ -64,35 +64,44 @@ def save_data_package_to_db(
     username: str = None,
     eud_uid: str = None,
 ):
+    # data_packages.filename has a UNIQUE constraint. ATAK reuses the same
+    # filename (photo capture timestamp) whenever it re-uploads a data package
+    # — e.g. re-sending the same photo to a different recipient. A naive
+    # INSERT would raise IntegrityError on the second attempt; the caller
+    # ignored that error and returned 200 anyway, so the follow-up CoT
+    # referenced a hash the DB never learned about and every downstream
+    # /Marti/sync/content?hash=... lookup returned 404 (the file was on disk
+    # but not queryable). Upsert on filename so the latest hash wins.
+    existing = db.session.execute(
+        db.select(DataPackage).filter_by(filename=filename)
+    ).scalar_one_or_none()
+
+    data_package = existing if existing is not None else DataPackage()
+    data_package.filename = filename
+    data_package.hash = sha256_hash
+    data_package.creator_uid = request.args.get("CreatorUid")  # iTAK
+    data_package.creator_uid = request.args.get("creatorUid")  # All other TAK clients
+    data_package.submission_user = current_user.id if current_user.is_authenticated else None
+    data_package.submission_time = datetime.now(timezone.utc)
+    data_package.mime_type = mimetype
+    data_package.size = file_size
+    data_package.creator_uid = eud_uid
+
+    if username:
+        user = app.security.datastore.find_user(username=username)
+        if user:
+            data_package.submission_user = user.id
+
     try:
-        data_package = DataPackage()
-        data_package.filename = filename
-        data_package.hash = sha256_hash
-        data_package.creator_uid = request.args.get("CreatorUid")  # iTAK
-        data_package.creator_uid = request.args.get("creatorUid")  # All other TAK clients
-        data_package.submission_user = current_user.id if current_user.is_authenticated else None
-        data_package.submission_time = datetime.now(timezone.utc)
-        data_package.mime_type = mimetype
-        data_package.size = file_size
-        data_package.creator_uid = eud_uid
-
-        if username:
-            user = app.security.datastore.find_user(username=username)
-            if user:
-                data_package.submission_user = user.id
-
-        db.session.add(data_package)
+        if existing is None:
+            db.session.add(data_package)
         db.session.commit()
     except sqlalchemy.exc.IntegrityError as e:
+        # Only reachable via a concurrent insert of the same filename between
+        # our SELECT and COMMIT. Log and give up rather than loop.
         db.session.rollback()
-        logger.error("Failed to save data package: {}".format(e))
+        logger.error("Failed to save data package '{}': {}".format(filename, e))
         logger.debug(traceback.format_exc())
-        return (
-            jsonify(
-                {"success": False, "error": gettext("This data package has already been uploaded")}
-            ),
-            400,
-        )
 
 
 def create_data_package_zip(file: FileStorage | str) -> str:
@@ -155,19 +164,29 @@ def create_data_package_zip(file: FileStorage | str) -> str:
     zipf.writestr("MANIFEST/manifest.xml", tostring(manifest))
     zipf.close()
 
-    # Get the sha256 hash of the data package zip for its file name on disk and for the data_packages table
     zip_file = open(os.path.join(app.config.get("UPLOAD_FOLDER"), f"{filename}.zip"), "rb")
     zip_file_bytes = zip_file.read()
     zip_file.close()
 
-    sha256 = hashlib.sha256()
-    sha256.update(zip_file_bytes)
-    data_package_hash = sha256.hexdigest()
+    # ATAK looks up the data package by the sha256 IT computed of the raw file
+    # it uploaded — the same value it sent as ?hash=… on the POST — via
+    # PUT /Marti/api/sync/metadata/<hash>/tool and later via sync/content?hash=…
+    # If we key the row and on-disk file by a server-computed hash of the
+    # server-wrapped zip, every client lookup 404s and the fileshare stalls.
+    # Honor the client hash whenever present; fall back to computing one only
+    # for non-request callers (there are none today, but the function still
+    # accepts a str path).
+    data_package_hash = request.args.get("hash") if request else None
+    if not data_package_hash:
+        sha256 = hashlib.sha256()
+        sha256.update(zip_file_bytes)
+        data_package_hash = sha256.hexdigest()
 
     os.rename(
         os.path.join(app.config.get("UPLOAD_FOLDER"), f"{filename}.zip"),
         os.path.join(app.config.get("UPLOAD_FOLDER"), f"{data_package_hash}.zip"),
     )
+    logger.debug("Wrapped and saved data package: {} - {}".format(filename, data_package_hash))
     save_data_package_to_db(
         f"{filename}.zip", data_package_hash, "application/zip", len(zip_file_bytes)
     )
