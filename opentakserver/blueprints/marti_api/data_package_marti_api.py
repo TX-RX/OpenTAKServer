@@ -164,19 +164,29 @@ def create_data_package_zip(file: FileStorage | str) -> str:
     zipf.writestr("MANIFEST/manifest.xml", tostring(manifest))
     zipf.close()
 
-    # Get the sha256 hash of the data package zip for its file name on disk and for the data_packages table
     zip_file = open(os.path.join(app.config.get("UPLOAD_FOLDER"), f"{filename}.zip"), "rb")
     zip_file_bytes = zip_file.read()
     zip_file.close()
 
-    sha256 = hashlib.sha256()
-    sha256.update(zip_file_bytes)
-    data_package_hash = sha256.hexdigest()
+    # ATAK looks up the data package by the sha256 IT computed of the raw file
+    # it uploaded — the same value it sent as ?hash=… on the POST — via
+    # PUT /Marti/api/sync/metadata/<hash>/tool and later via sync/content?hash=…
+    # If we key the row and on-disk file by a server-computed hash of the
+    # server-wrapped zip, every client lookup 404s and the fileshare stalls.
+    # Honor the client hash whenever present; fall back to computing one only
+    # for non-request callers (there are none today, but the function still
+    # accepts a str path).
+    data_package_hash = request.args.get("hash") if request else None
+    if not data_package_hash:
+        sha256 = hashlib.sha256()
+        sha256.update(zip_file_bytes)
+        data_package_hash = sha256.hexdigest()
 
     os.rename(
         os.path.join(app.config.get("UPLOAD_FOLDER"), f"{filename}.zip"),
         os.path.join(app.config.get("UPLOAD_FOLDER"), f"{data_package_hash}.zip"),
     )
+    logger.debug("Wrapped and saved data package: {} - {}".format(filename, data_package_hash))
     save_data_package_to_db(
         f"{filename}.zip", data_package_hash, "application/zip", len(zip_file_bytes)
     )
