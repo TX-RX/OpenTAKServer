@@ -6,6 +6,7 @@ from cryptography import x509
 from flask import Flask
 from flask_ldap3_login import AuthenticationResponseStatus
 from flask_security import verify_password
+from sqlalchemy import func
 
 from ..extensions import ldap_manager
 
@@ -48,6 +49,19 @@ class MumbleAuthenticator(Murmur.ServerUpdatingAuthenticator):
           4. Above with `_` -> ` ` (ATAK Mumble plugin replaces spaces in callsigns)
           5. Cert CN -> EUD.uid (immutable; survives callsign renames)
 
+        Each EUD callsign comparison is whitespace-tolerant: the stored
+        column is wrapped in `TRIM()` before equality, so a stale leading
+        or trailing space on the EUD row doesn't prevent a match.  Real-
+        world cause: ATAK occasionally publishes a CoT contact with
+        `callsign="Some User "` (trailing space), the EUD handler stores
+        it verbatim, and the Mumble plugin (which trims its own callsign
+        before building the Mumble username) then can't be matched back.
+        Trimming the column at lookup time keeps Mumble auth working
+        even when the underlying row is dirty; a separate write-side fix
+        (strip on insert/update in EudHandler / cot_parser / meshtastic_
+        controller) prevents new rows from carrying junk in the first
+        place.  See PR description for the write-side follow-up.
+
         Does NOT verify password.  Returns (user_or_None, is_callsign_auth_bool).
         """
         from opentakserver.models.EUD import EUD
@@ -56,17 +70,17 @@ class MumbleAuthenticator(Murmur.ServerUpdatingAuthenticator):
         if user:
             return user, False
 
-        eud = EUD.query.filter_by(callsign=username).first()
+        eud = EUD.query.filter(func.trim(EUD.callsign) == username).first()
 
         base_callsign = username
         if not eud and "---" in username:
             base_callsign = username.split("---")[0]
-            eud = EUD.query.filter_by(callsign=base_callsign).first()
+            eud = EUD.query.filter(func.trim(EUD.callsign) == base_callsign).first()
 
         if not eud:
             spaced = base_callsign.replace("_", " ")
             if spaced != base_callsign:
-                eud = EUD.query.filter_by(callsign=spaced).first()
+                eud = EUD.query.filter(func.trim(EUD.callsign) == spaced).first()
 
         if not eud and certlist:
             eud = MumbleAuthenticator._eud_from_cert(certlist)
