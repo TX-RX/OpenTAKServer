@@ -70,17 +70,11 @@ class MumbleAuthenticator(Murmur.ServerUpdatingAuthenticator):
         if user:
             return user, False
 
-        eud = EUD.query.filter(func.trim(EUD.callsign) == username).first()
-
-        base_callsign = username
-        if not eud and "---" in username:
-            base_callsign = username.split("---")[0]
-            eud = EUD.query.filter(func.trim(EUD.callsign) == base_callsign).first()
-
-        if not eud:
-            spaced = base_callsign.replace("_", " ")
-            if spaced != base_callsign:
-                eud = EUD.query.filter(func.trim(EUD.callsign) == spaced).first()
+        eud = None
+        for candidate in MumbleAuthenticator._candidate_callsigns(username):
+            eud = EUD.query.filter(func.trim(EUD.callsign) == candidate).first()
+            if eud:
+                break
 
         if not eud and certlist:
             eud = MumbleAuthenticator._eud_from_cert(certlist)
@@ -90,6 +84,35 @@ class MumbleAuthenticator(Murmur.ServerUpdatingAuthenticator):
             if user:
                 return user, True
         return None, False
+
+    @staticmethod
+    def _candidate_callsigns(username):
+        """Ordered, de-duplicated callsign spellings to try for an EUD lookup.
+
+        Derived from a presented Mumble username; first match wins:
+          1. the presented name verbatim
+          2. with the ATAK Vx ``---<uid>`` suffix stripped (and surrounding
+             whitespace trimmed, in case the callsign portion carries a stray
+             leading/trailing space)
+          3. #2 with underscores turned back into spaces (the Vx plugin
+             replaces spaces in callsigns with underscores)
+
+        Stored ``EUD.callsign`` values are matched with SQL ``TRIM()`` at the
+        call site, so this only needs to normalize the *presented* side.
+        """
+        base = username
+        if "---" in username:
+            base = username.split("---")[0].strip()
+
+        ordered = [username, base, base.replace("_", " ")]
+
+        seen = set()
+        candidates = []
+        for name in ordered:
+            if name and name not in seen:
+                seen.add(name)
+                candidates.append(name)
+        return candidates
 
     @staticmethod
     def _eud_from_cert(certlist):
