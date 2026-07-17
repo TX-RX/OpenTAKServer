@@ -620,7 +620,7 @@ class DirectionEnforcementCallback(Murmur.ServerCallback):
             # Root and non-OTS channels (VX temps, event channels) are not
             # subject to direction enforcement -- treat as if direction=IN.
             direction = group_directions.get(channel_name)
-            should_suppress = (direction == 'OUT')
+            should_suppress = False  # IN/OUT both grant speak; direction-based mute disabled per rally-day policy
 
             with self._suppress_lock:
                 currently_suppressed = session in self._suppressed_sessions
