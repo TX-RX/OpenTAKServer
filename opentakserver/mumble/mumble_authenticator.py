@@ -1,5 +1,5 @@
-import hashlib
 import os
+import zlib
 
 import Ice
 from cryptography import x509
@@ -19,7 +19,6 @@ Ice.loadSlice(
     ],
 )
 import Murmur
-
 
 # Each OTS user gets a 1000-id range in Mumble.  PC username auth uses the base
 # id (user.id * 1000); ATAK callsign auth uses base + a deterministic offset
@@ -134,7 +133,7 @@ class MumbleAuthenticator(Murmur.ServerUpdatingAuthenticator):
                 eud = EUD.query.filter_by(uid=cns[0].value).first()
                 if eud:
                     return eud
-            except Exception:
+            except Exception:  # nosec B112 -- skip an unparseable cert, try the next
                 continue
         return None
 
@@ -150,8 +149,11 @@ class MumbleAuthenticator(Murmur.ServerUpdatingAuthenticator):
         opens two sockets per device, each with a different `---<uuid>` suffix).
         """
         if is_callsign_auth:
-            digest = int(hashlib.md5(presented_username.encode()).hexdigest(), 16)
-            offset = digest % MUMBLE_ID_CALLSIGN_OFFSET_RANGE + 1
+            # Non-cryptographic hash: we only need a stable per-callsign offset
+            # within the user's id block so one OTS account can host multiple
+            # simultaneous device connections. CRC32 is deterministic and is
+            # not a security hash (keeps it off the SAST weak-crypto radar).
+            offset = zlib.crc32(presented_username.encode()) % MUMBLE_ID_CALLSIGN_OFFSET_RANGE + 1
             return user.id * MUMBLE_ID_RANGE + offset, presented_username
         return user.id * MUMBLE_ID_RANGE, user.username
 

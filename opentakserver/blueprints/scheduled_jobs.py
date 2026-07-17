@@ -431,8 +431,7 @@ def cleanup_unmanaged_mumble_channels():
         )
 
         managed_names = {
-            g.name for g in db.session.query(Group).all()
-            if g.name and g.name != "__ANON__"
+            g.name for g in db.session.query(Group).all() if g.name and g.name != "__ANON__"
         }
 
         try:

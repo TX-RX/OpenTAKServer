@@ -8,6 +8,7 @@ The authenticator module loads Murmur's Ice slice at import time, so the whole
 module is unavailable without Ice installed -- skip cleanly in that case (the
 suite runs under CI and on the server, where Ice is present).
 """
+
 import sys
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
@@ -54,9 +55,9 @@ def test_candidate_callsigns_has_no_duplicates_or_empties():
     for username in ("bob", "bob---uid", "a_b---uid", "  x ---y", "---"):
         candidates = MumbleAuthenticator._candidate_callsigns(username)
         assert all(candidates), f"empty candidate for {username!r}: {candidates}"
-        assert len(candidates) == len(set(candidates)), (
-            f"duplicate candidate for {username!r}: {candidates}"
-        )
+        assert len(candidates) == len(
+            set(candidates)
+        ), f"duplicate candidate for {username!r}: {candidates}"
 
 
 # --------------------------------------------------------------------------- #
@@ -148,8 +149,6 @@ def test_resolve_identity_returns_none_when_nothing_matches():
     app = _app(username_lookup=None, id_lookup=None)
     mods, func = _patched(_fake_eud_module([None, None, None]))
     with mods, func:
-        user, is_callsign_auth = MumbleAuthenticator.resolve_identity(
-            app, "ghost", certlist=None
-        )
+        user, is_callsign_auth = MumbleAuthenticator.resolve_identity(app, "ghost", certlist=None)
     assert user is None
     assert is_callsign_auth is False

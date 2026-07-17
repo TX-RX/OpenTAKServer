@@ -18,7 +18,6 @@ Ice.loadSlice(
 )
 import Murmur
 
-
 # Murmur permission bit masks — names mirror Murmur.ice for grep-ability.
 PERM_TRAVERSE = 0x002
 PERM_ENTER = 0x004
@@ -30,9 +29,7 @@ PERM_MAKE_TEMP_CHANNEL = 0x400
 # Baseline speak/text grant used on temp channels so any authenticated user
 # (regardless of which OTS group they belong to) can join a VX-initiated
 # conference call once invited.
-PERM_BASELINE_SPEAK = (
-    PERM_TRAVERSE | PERM_ENTER | PERM_SPEAK | PERM_WHISPER | PERM_TEXT_MESSAGE
-)
+PERM_BASELINE_SPEAK = PERM_TRAVERSE | PERM_ENTER | PERM_SPEAK | PERM_WHISPER | PERM_TEXT_MESSAGE
 
 # Same admin grant Murmur uses on Root by default — gives admins full control
 # of temp channels (kick stragglers, link, etc.) without touching their existing
@@ -258,6 +255,7 @@ class MumbleIceApp(Ice.Application):
             with self.app.app_context():
                 from opentakserver.extensions import db
                 from opentakserver.models.Group import Group
+
                 rows = db.session.query(Group).all()
                 group_names = {g.name for g in rows if g.name and g.name != "__ANON__"}
 
@@ -289,9 +287,7 @@ class MumbleIceApp(Ice.Application):
             if self.app.config.get("OTS_MUMBLE_ENABLE_CONFERENCE_CALLS", True):
                 self._ensure_temp_channel_acls(server, group_names)
         except Exception as e:
-            self.logger.error(
-                f"sync_channels_from_groups failed: {e}", exc_info=True
-            )
+            self.logger.error(f"sync_channels_from_groups failed: {e}", exc_info=True)
 
     def _ensure_temp_channel_acls(self, server, managed_names):
         """Grant MakeTempChannel on Root and each OTS-managed channel.
@@ -348,12 +344,10 @@ class MumbleIceApp(Ice.Application):
             try:
                 acls, groups, inherit = server.getACL(channel_id)
             except Exception as e:
-                self.logger.error(
-                    f"getACL({channel_id}, name={channel_name}) failed: {e}"
-                )
+                self.logger.error(f"getACL({channel_id}, name={channel_name}) failed: {e}")
                 return
 
-            is_root = (channel_id == 0)
+            is_root = channel_id == 0
             own_acls = [a for a in acls if not a.inherited]
 
             targets = {"auth", "admin"}
@@ -385,9 +379,11 @@ class MumbleIceApp(Ice.Application):
                     if not is_root:
                         new_apply_here = False
 
-                if (new_allow != acl.allow
-                        or new_apply_subs != acl.applySubs
-                        or new_apply_here != acl.applyHere):
+                if (
+                    new_allow != acl.allow
+                    or new_apply_subs != acl.applySubs
+                    or new_apply_here != acl.applyHere
+                ):
                     before_allow = acl.allow
                     before_sub = acl.applySubs
                     before_here = acl.applyHere
@@ -408,10 +404,17 @@ class MumbleIceApp(Ice.Application):
             # under this channel inherit Enter+Speak for any authenticated
             # user.  The channel itself stays members-only.
             if not is_root and not any(a.group == "auth" for a in own_acls):
-                own_acls.append(Murmur.ACL(
-                    applyHere=False, applySubs=True, inherited=False,
-                    userid=-1, group="auth", allow=PERM_BASELINE_SPEAK, deny=0,
-                ))
+                own_acls.append(
+                    Murmur.ACL(
+                        applyHere=False,
+                        applySubs=True,
+                        inherited=False,
+                        userid=-1,
+                        group="auth",
+                        allow=PERM_BASELINE_SPEAK,
+                        deny=0,
+                    )
+                )
                 self.logger.info(
                     f"Adding @auth sub-grant on channel_id={channel_id} "
                     f"name={channel_name}: allow=0x{PERM_BASELINE_SPEAK:x}, apply_sub=True"
@@ -477,16 +480,16 @@ class MumbleIceApp(Ice.Application):
                 self.attach_callbacks()
             except Ice.Exception as e:
                 self.logger.warning(
-                    "{}: Failed connection check, will retry in next watchdog run ({}s)".format(e, 10)
+                    "{}: Failed connection check, will retry in next watchdog run ({}s)".format(
+                        e, 10
+                    )
                 )
             except Exception as e:
                 # Anything other than an Ice exception (a SQLAlchemy error
                 # from sync_channels_from_groups, a runtime bug, etc.) would
                 # otherwise propagate out and break the watchdog Timer chain,
                 # leaving OTS unable to recover from future Murmur restarts.
-                self.logger.error(
-                    f"Unexpected error in watchdog reattach: {e}", exc_info=True
-                )
+                self.logger.error(f"Unexpected error in watchdog reattach: {e}", exc_info=True)
         finally:
             # Always re-arm the timer, even if attach_callbacks raised
             # something unexpected.  daemon=True so the timer thread doesn't
@@ -525,6 +528,12 @@ class DirectionEnforcementCallback(Murmur.ServerCallback):
         # enforcement is effectively free.
         self._suppressed_sessions = set()
         self._suppress_lock = threading.Lock()
+        # Direction-based mute is disabled by default (IN and OUT memberships
+        # both grant speak). Flip OTS_MUMBLE_DIRECTION_MUTE_ENABLED to re-enable
+        # OUT=listen-only suppression.
+        self._direction_mute_enabled = bool(
+            app.config.get("OTS_MUMBLE_DIRECTION_MUTE_ENABLED", False)
+        )
 
     # ------------------------------------------------------------------ helpers
 
@@ -551,8 +560,8 @@ class DirectionEnforcementCallback(Murmur.ServerCallback):
 
         with self._session_lock:
             cached = self._session_cache.get(session_id)
-            if cached and (now - cached['cached_at']) < cache_ttl:
-                return cached['directions'], cached['is_admin']
+            if cached and (now - cached["cached_at"]) < cache_ttl:
+                return cached["directions"], cached["is_admin"]
 
         group_directions = {}
         is_admin = False
@@ -573,19 +582,19 @@ class DirectionEnforcementCallback(Murmur.ServerCallback):
                         continue
                     grp = membership.group.name
                     # Prefer IN over OUT if both rows exist for the same group
-                    if group_directions.get(grp) != 'IN':
+                    if group_directions.get(grp) != "IN":
                         group_directions[grp] = membership.direction
 
-                is_admin = any(r.name == 'administrator' for r in user.roles)
+                is_admin = any(r.name == "administrator" for r in user.roles)
         except Exception as e:
             self.logger.error(f"Direction lookup failed for '{username}': {e}", exc_info=True)
             return {}, False
 
         with self._session_lock:
             self._session_cache[session_id] = {
-                'directions': group_directions,
-                'is_admin': is_admin,
-                'cached_at': now,
+                "directions": group_directions,
+                "is_admin": is_admin,
+                "cached_at": now,
             }
 
         return group_directions, is_admin
@@ -620,7 +629,7 @@ class DirectionEnforcementCallback(Murmur.ServerCallback):
             # Root and non-OTS channels (VX temps, event channels) are not
             # subject to direction enforcement -- treat as if direction=IN.
             direction = group_directions.get(channel_name)
-            should_suppress = False  # IN/OUT both grant speak; direction-based mute disabled per rally-day policy
+            should_suppress = self._direction_mute_enabled and direction == "OUT"
 
             with self._suppress_lock:
                 currently_suppressed = session in self._suppressed_sessions
@@ -632,9 +641,7 @@ class DirectionEnforcementCallback(Murmur.ServerCallback):
                 s = self.server.getState(session)
             except Murmur.InvalidSessionException:
                 # Session disconnected between dispatch and execution -- normal.
-                self.logger.debug(
-                    f"Direction: session {session} ({username}) gone before getState"
-                )
+                self.logger.debug(f"Direction: session {session} ({username}) gone before getState")
                 with self._suppress_lock:
                     self._suppressed_sessions.discard(session)
                 return
@@ -643,9 +650,7 @@ class DirectionEnforcementCallback(Murmur.ServerCallback):
             try:
                 self.server.setState(s)
             except Murmur.InvalidSessionException:
-                self.logger.debug(
-                    f"Direction: session {session} ({username}) gone before setState"
-                )
+                self.logger.debug(f"Direction: session {session} ({username}) gone before setState")
                 with self._suppress_lock:
                     self._suppressed_sessions.discard(session)
                 return
@@ -657,15 +662,13 @@ class DirectionEnforcementCallback(Murmur.ServerCallback):
                     self._suppressed_sessions.discard(session)
 
             if should_suppress:
-                self.logger.info(
-                    f"LISTEN ONLY: {username} in {channel_name} (direction=OUT)"
-                )
+                self.logger.info(f"LISTEN ONLY: {username} in {channel_name} (direction=OUT)")
                 try:
                     self.server.sendMessage(
                         session,
                         f"<b>Listen Only:</b> You are receive-only in {channel_name}.",
                     )
-                except Exception:
+                except Exception:  # nosec B110 -- best-effort notice; never fatal
                     pass
             else:
                 self.logger.info(
@@ -674,9 +677,7 @@ class DirectionEnforcementCallback(Murmur.ServerCallback):
                 )
 
         except Murmur.InvalidSessionException:
-            self.logger.debug(
-                f"Direction: session {session} ({username}) gone during apply"
-            )
+            self.logger.debug(f"Direction: session {session} ({username}) gone during apply")
             with self._suppress_lock:
                 self._suppressed_sessions.discard(session)
         except Exception as e:
@@ -746,7 +747,9 @@ class MetaCallback(Murmur.MetaCallback):
         """
         server_id = server.id()
         self.authenticator.logger.info(
-            "Virtual server {} started — attaching authenticator and direction callback".format(server_id)
+            "Virtual server {} started — attaching authenticator and direction callback".format(
+                server_id
+            )
         )
         try:
             server.setAuthenticator(self.authenticator.auth)

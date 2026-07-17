@@ -140,7 +140,7 @@ class DefaultConfig:
     OTS_PROFILE_MAP_SOURCES = True
 
     OTS_ENABLE_MUMBLE_AUTHENTICATION = False
-    OTS_ICE_SECRET = ""
+    OTS_ICE_SECRET = ""  # nosec B105 -- config default, not a hardcoded credential
     # When True, OTS adds the ACL grants that enable ATAK VX direct calls
     # for non-admin users:
     #   - MakeTempChannel on Root and each OTS-managed channel
@@ -158,6 +158,9 @@ class DefaultConfig:
     # survive as long as they're in use.
     OTS_MUMBLE_CHANNEL_CLEANUP_ENABLED = True
     OTS_MUMBLE_CHANNEL_CLEANUP_IDLE_DAYS = 5
+    # Direction-based mute for Mumble (OUT membership = listen-only). Disabled
+    # by default: IN and OUT both grant speak. Set True to enforce OUT=muted.
+    OTS_MUMBLE_DIRECTION_MUTE_ENABLED = False
 
     OTS_IP_WHITELIST = ["127.0.0.1"]
 
