@@ -74,9 +74,7 @@ def paginate(query: db.Query, model=None):
                 # to "Alice" instead of after every uppercase entry (Postgres
                 # default collation is byte-ordered: Z < a).
                 try:
-                    is_string_col = isinstance(
-                        column.type, (String, Text, Unicode, UnicodeText)
-                    )
+                    is_string_col = isinstance(column.type, (String, Text, Unicode, UnicodeText))
                 except AttributeError:
                     is_string_col = False
                 sort_expr = func.lower(column) if is_string_col else column
