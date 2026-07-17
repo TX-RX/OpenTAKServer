@@ -16,7 +16,7 @@ from flask_security.models import fsqla
 
 from opentakserver.defaultconfig import DefaultConfig
 from opentakserver.EmailValidator import EmailValidator
-from opentakserver.eud_handler import EudHandler
+from opentakserver.eud_handler.EudHandler import EudHandler
 from opentakserver.eud_handler.EudHandlerSSL import EudHandlerSSL
 from opentakserver.eud_handler.EudServer import EudServer
 from opentakserver.eud_handler.EudServerSSL import EudServerSSL
