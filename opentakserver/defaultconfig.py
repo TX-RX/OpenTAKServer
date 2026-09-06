@@ -140,6 +140,27 @@ class DefaultConfig:
     OTS_PROFILE_MAP_SOURCES = True
 
     OTS_ENABLE_MUMBLE_AUTHENTICATION = False
+    OTS_ICE_SECRET = ""  # nosec B105 -- config default, not a hardcoded credential
+    # When True, OTS adds the ACL grants that enable ATAK VX direct calls
+    # for non-admin users:
+    #   - MakeTempChannel on Root and each OTS-managed channel
+    #   - An @auth sub-grant on group channels with apply_sub=True so VX
+    #     temps inherit Enter/Speak via Mumble's normal ACL propagation
+    #   - Full admin grant (0x707ff with apply_sub=True) on every OTS
+    #     channel so OTS administrators retain Murmur server-admin powers
+    # Set False to keep the legacy admin-only model (calls and channel
+    # creation are restricted to OTS administrators).
+    OTS_MUMBLE_ENABLE_CONFERENCE_CALLS = True
+    # Periodic cleanup of root-level Mumble channels not backed by an OTS
+    # group.  Channels whose name matches an OTS group are always preserved.
+    # Anything else (event channels admins create through the Mumble GUI) is
+    # removed once it's been empty for IDLE_DAYS, so deliberate event channels
+    # survive as long as they're in use.
+    OTS_MUMBLE_CHANNEL_CLEANUP_ENABLED = True
+    OTS_MUMBLE_CHANNEL_CLEANUP_IDLE_DAYS = 5
+    # Direction-based mute for Mumble (OUT membership = listen-only). Disabled
+    # by default: IN and OUT both grant speak. Set True to enforce OUT=muted.
+    OTS_MUMBLE_DIRECTION_MUTE_ENABLED = False
 
     OTS_IP_WHITELIST = ["127.0.0.1"]
 
@@ -273,6 +294,13 @@ class DefaultConfig:
             "trigger": "interval",
             "seconds": 0,
             "minutes": 1,
+            "next_run_time": None,
+        },
+        {
+            "id": "cleanup_unmanaged_mumble_channels",
+            "func": "opentakserver.blueprints.scheduled_jobs:cleanup_unmanaged_mumble_channels",
+            "trigger": "interval",
+            "days": 2,
             "next_run_time": None,
         },
     ]

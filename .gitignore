@@ -168,3 +168,5 @@ instance/*
 .webassets-cache
 .env
 
+# Claude Code per-project settings (local overrides, transcripts, etc.)
+.claude/
